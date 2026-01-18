@@ -1,20 +1,24 @@
 package com.project.Splitwise.domain.event;
 
-import lombok.Data;
-import lombok.RequiredArgsConstructor;
+import lombok.*;
 
 import java.math.BigDecimal;
 import java.util.List;
 
-@RequiredArgsConstructor
+
 @Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+//@RequiredArgsConstructor
 public class ExpenseCreatedEvent {
 
-    private final Long expenseId;
-    private final Long groupId;
-    private final Long paidBy;
-    private final BigDecimal amount;
-    private final List<Share> shares;
+    private String eventId;
+    private  Long expenseId;
+    private  Long groupId;
+    private  Long paidBy;
+    private  BigDecimal amount;
+    private  List<Share> shares;
 
     public record Share(Long userId, BigDecimal amount) {}
 }

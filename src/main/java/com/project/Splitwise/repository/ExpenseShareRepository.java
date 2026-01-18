@@ -1,4 +1,7 @@
 package com.project.Splitwise.repository;
 
-public class ExpenseShareRepository {
+import com.project.Splitwise.model.ExpenseShare;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface ExpenseShareRepository extends JpaRepository<ExpenseShare, Long> {
 }

@@ -1,4 +1,4 @@
-package com.project.Splitwise.domain;
+package com.project.Splitwise.domain.settlement;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;

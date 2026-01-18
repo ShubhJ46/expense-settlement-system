@@ -1,4 +1,7 @@
 package com.project.Splitwise.repository;
 
-public interface ProcessedEventRepository {
+import com.project.Splitwise.model.ProcessedEvent;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface ProcessedEventRepository extends JpaRepository<ProcessedEvent, String> {
 }
