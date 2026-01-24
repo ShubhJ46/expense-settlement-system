@@ -1,6 +1,5 @@
 package com.project.Splitwise.kafka;
 
-import com.project.Splitwise.controller.ExpenseController;
 import com.project.Splitwise.domain.event.ExpenseCreatedEvent;
 import com.project.Splitwise.model.ProcessedEvent;
 import com.project.Splitwise.repository.ProcessedEventRepository;
@@ -11,6 +10,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
+
+import java.math.BigDecimal;
 
 @Component
 @Slf4j
@@ -29,18 +30,14 @@ public class BalanceEventConsumer {
     )
     @Transactional
     public void consume(ExpenseCreatedEvent event) {
-
-        if(processedEventRepo.existsById(event.getEventId())) {
-            log.warn("Skipping duplicate event {}", event.getEventId());
-            return;
-        }
-
         log.info("CONSUMED EVENT: {}", event.getExpenseId());
+
+        /*// Controlled poison simulation
+        if (event.getGroupId() == 999L) {
+            throw new RuntimeException("Simulated consumer failure");
+        }*/
+
         balanceService.handleExpense(event);
-
-        processedEventRepo.save(new ProcessedEvent(event.getEventId()));
-
-        log.info("PROCESSED EVENT: {}", event.getExpenseId());
     }
 
 

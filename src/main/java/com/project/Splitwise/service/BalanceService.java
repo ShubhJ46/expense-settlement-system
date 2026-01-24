@@ -1,5 +1,6 @@
 package com.project.Splitwise.service;
 
+import com.project.Splitwise.domain.event.BalanceChangedInternalEvent;
 import com.project.Splitwise.domain.event.ExpenseCreatedEvent;
 import com.project.Splitwise.kafka.BalanceEventProducer;
 import com.project.Splitwise.model.Balance;
@@ -7,6 +8,7 @@ import com.project.Splitwise.model.ProcessedEvent;
 import com.project.Splitwise.repository.BalanceRepository;
 import com.project.Splitwise.repository.ProcessedEventRepository;
 import jakarta.transaction.Transactional;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -18,13 +20,15 @@ public class BalanceService {
     private final BalanceRepository balanceRepo;
     private final ProcessedEventRepository processedRepo;
     private final BalanceEventProducer producer;
+    private final ApplicationEventPublisher eventPublisher;
 
     public BalanceService(BalanceRepository balanceRepo,
                           ProcessedEventRepository processedRepo,
-                          BalanceEventProducer producer) {
+                          BalanceEventProducer producer, ApplicationEventPublisher eventPublisher) {
         this.balanceRepo = balanceRepo;
         this.processedRepo = processedRepo;
         this.producer = producer;
+        this.eventPublisher = eventPublisher;
     }
 
     public void handleExpense(ExpenseCreatedEvent event) {
@@ -43,19 +47,14 @@ public class BalanceService {
                 .findFirst()
                 .orElse(BigDecimal.ZERO);
 
-        // The amount to credit is total paid minus their own share
-        BigDecimal credit =  paidAmount.subtract(paidByShare);
-        applyDelta(groupId, event.getPaidBy(), credit);
+        applyDelta(groupId, event.getPaidBy(), paidAmount);
 
-        // Debit other users
-        for (var share: event.getShares()) {
+        // Debit all users for their share
+        for (var share : event.getShares()) {
             applyDelta(groupId, share.userId(), share.amount().negate());
         }
 
         processedRepo.save(new ProcessedEvent(event.getEventId()));
-
-        producer.publish(groupId);
-
     }
 
     private void applyDelta(Long groupId, Long userId, BigDecimal delta) {
@@ -65,6 +64,13 @@ public class BalanceService {
 
         balance.add(delta);
         balanceRepo.save(balance);
+        eventPublisher.publishEvent(
+                new BalanceChangedInternalEvent(
+                        groupId,
+                        userId,
+                        balance.getNetBalance()
+                )
+        );
     }
 
 

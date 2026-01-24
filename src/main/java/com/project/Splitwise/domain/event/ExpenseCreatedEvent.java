@@ -10,7 +10,6 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-//@RequiredArgsConstructor
 public class ExpenseCreatedEvent {
 
     private String eventId;

@@ -1,5 +1,6 @@
 package com.project.Splitwise.kafka;
 
+import com.project.Splitwise.domain.event.BalanceUpdatedEvent;
 import com.project.Splitwise.repository.BalanceRepository;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
@@ -19,17 +20,16 @@ public class BalanceEventProducer {
     public void publish(Long groupId) {
 
         List<BalanceUpdatedEvent.UserBalance> balances =
-                balanceRepo.findAll().stream()
-                        .filter(b -> b.getGroupId().equals(groupId))
+                balanceRepo.findByGroupId(groupId).stream()
                         .map(b -> new BalanceUpdatedEvent.UserBalance(
                                 b.getUserId(),
                                 b.getNetBalance()
                         ))
                         .toList();
 
+        BalanceUpdatedEvent event =
+                new BalanceUpdatedEvent(groupId, balances);
 
-        BalanceUpdatedEvent event = new BalanceUpdatedEvent(groupId, balances);
         kafkaTemplate.send("balance-updated", event);
-
     }
 }
