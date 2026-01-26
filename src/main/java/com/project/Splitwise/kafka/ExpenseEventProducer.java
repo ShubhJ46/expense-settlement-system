@@ -23,6 +23,11 @@ public class ExpenseEventProducer {
     }
 
     public void publish(ExpenseCreatedEvent event) {
+
+        if (event.getGroupId() == null) {
+            throw new IllegalStateException("groupId cannot be null");
+        }
+
         kafkaTemplate.send(
                 "expense-created",
                 event.getGroupId().toString(),

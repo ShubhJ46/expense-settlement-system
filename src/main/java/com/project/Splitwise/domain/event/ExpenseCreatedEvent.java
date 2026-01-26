@@ -1,5 +1,6 @@
 package com.project.Splitwise.domain.event;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.*;
 
 import java.math.BigDecimal;
@@ -10,7 +11,8 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-public class ExpenseCreatedEvent {
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class  ExpenseCreatedEvent {
 
     private String eventId;
     private  Long expenseId;
