@@ -1,4 +1,4 @@
-# Splitwise Backend – Event‑Driven, Interview‑Ready Architecture
+# Splitwise Backend – Event‑Driven Architecture
 
 A production‑grade **Splitwise‑like backend** built using **Spring Boot, Kafka, PostgreSQL, and Domain‑Driven Design (DDD)** principles.
 This project demonstrates **event‑driven architecture, idempotent consumers, eventual consistency, and read/write model separation**, exactly how such systems are designed in real companies.
