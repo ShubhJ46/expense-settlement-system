@@ -106,6 +106,18 @@ public final class ShareAllocator {
         return allocation;
     }
 
+    /**
+     * Rejects an amount that is finer than the monetary scale.
+     *
+     * <p>Exposed so that money which moves without being split — a settlement payment — is
+     * held to the same rule as money that does. Without this, a 10.005 payment would be
+     * stored at full precision and quietly desynchronise the balances from any figure a
+     * user could actually transfer.
+     */
+    public static void requireRepresentable(BigDecimal amount) {
+        toMinorUnits(amount);
+    }
+
     private static long toMinorUnits(BigDecimal total) {
         if (total == null) {
             throw new IllegalArgumentException("total must not be null");

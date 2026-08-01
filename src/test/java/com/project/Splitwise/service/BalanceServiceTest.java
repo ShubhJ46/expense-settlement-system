@@ -2,6 +2,7 @@ package com.project.Splitwise.service;
 
 import com.project.Splitwise.domain.event.ExpenseCreatedEvent;
 import com.project.Splitwise.domain.event.GroupBalancesChangedEvent;
+import com.project.Splitwise.domain.event.PaymentRecordedEvent;
 import com.project.Splitwise.model.Balance;
 import com.project.Splitwise.model.ProcessedEvent;
 import com.project.Splitwise.repository.BalanceRepository;
@@ -148,5 +149,81 @@ class BalanceServiceTest {
 
         verify(eventPublisher, never()).publishEvent(any(Object.class));
         verify(balanceRepo, never()).save(any(Balance.class));
+    }
+
+    private static PaymentRecordedEvent payment(String eventId, long from, long to, String amount) {
+        return PaymentRecordedEvent.builder()
+                .eventId(eventId)
+                .paymentId(1L)
+                .groupId(GROUP_ID)
+                .fromUserId(from)
+                .toUserId(to)
+                .amount(new BigDecimal(amount))
+                .build();
+    }
+
+    @Test
+    @DisplayName("paying a debt in full returns both parties to zero")
+    void paymentDischargesTheDebt() {
+        when(processedRepo.existsById(any())).thenReturn(false);
+
+        // User 2 and 3 each owe user 1 a hundred.
+        balanceService.handleExpense(expense("evt-1", 1L, "300.00",
+                Map.of(1L, "100.00", 2L, "100.00", 3L, "100.00")));
+
+        // User 2 settles up.
+        balanceService.handlePayment(payment("pay-1", 2L, 1L, "100.00"));
+
+        assertEquals(0, stored.get(2L).getNetBalance().compareTo(BigDecimal.ZERO),
+                "the payer's debt is discharged");
+        assertEquals(0, stored.get(1L).getNetBalance().compareTo(new BigDecimal("100.00")),
+                "the payee is still owed the other share");
+        assertEquals(0, stored.get(3L).getNetBalance().compareTo(new BigDecimal("-100.00")));
+    }
+
+    @Test
+    @DisplayName("payments keep the group summing to zero")
+    void paymentPreservesZeroSum() {
+        when(processedRepo.existsById(any())).thenReturn(false);
+
+        balanceService.handleExpense(expense("evt-1", 1L, "300.00",
+                Map.of(1L, "100.00", 2L, "100.00", 3L, "100.00")));
+        balanceService.handlePayment(payment("pay-1", 2L, 1L, "40.00"));
+
+        BigDecimal total = stored.values().stream()
+                .map(Balance::getNetBalance)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        assertEquals(0, total.compareTo(BigDecimal.ZERO));
+    }
+
+    @Test
+    @DisplayName("overpaying flips the position rather than clamping at zero")
+    void overpaymentInvertsTheDebt() {
+        when(processedRepo.existsById(any())).thenReturn(false);
+
+        balanceService.handleExpense(expense("evt-1", 1L, "300.00",
+                Map.of(1L, "100.00", 2L, "100.00", 3L, "100.00")));
+        balanceService.handlePayment(payment("pay-1", 2L, 1L, "150.00"));
+
+        assertEquals(0, stored.get(2L).getNetBalance().compareTo(new BigDecimal("50.00")),
+                "having overpaid by 50, user 2 is now owed 50");
+    }
+
+    @Test
+    @DisplayName("a redelivered payment does not discharge the debt twice")
+    void redeliveredPaymentIsANoOp() {
+        when(processedRepo.existsById(any())).thenReturn(false);
+        balanceService.handleExpense(expense("evt-1", 1L, "300.00",
+                Map.of(1L, "100.00", 2L, "100.00", 3L, "100.00")));
+
+        PaymentRecordedEvent event = payment("pay-dup", 2L, 1L, "100.00");
+        balanceService.handlePayment(event);
+        BigDecimal afterFirst = stored.get(2L).getNetBalance();
+
+        when(processedRepo.existsById("pay-dup")).thenReturn(true);
+        balanceService.handlePayment(event);
+
+        assertEquals(0, stored.get(2L).getNetBalance().compareTo(afterFirst));
     }
 }

@@ -16,12 +16,18 @@ does not divide evenly.
 ```mermaid
 flowchart LR
     C[Client] -->|POST /expenses| API[ExpenseService]
+    C -->|POST /groups/id/settlements| PAY[PaymentService]
     API -->|same transaction| DB[(expenses<br/>expense_shares<br/>outbox_events)]
+    PAY -->|same transaction| DB
     R[OutboxRelay] -->|poll FOR UPDATE SKIP LOCKED| DB
     R -->|expense-created| K1{{Kafka}}
+    R -->|payment-recorded| K1
     K1 --> BC[BalanceEventConsumer]
+    K1 --> PC[PaymentEventConsumer]
     BC -->|dedupe on eventId| BAL[(balances<br/>processed_events)]
+    PC -->|dedupe on eventId| BAL
     BC -->|after commit| K2{{balance-updated}}
+    PC -->|after commit| K2
     K2 --> BV[BalanceViewConsumer] --> GBV[(group_balance_view)]
     K2 --> SP[SettlementProjector]
     SP -->|settlement-calculated| K3{{Kafka}}
@@ -130,6 +136,7 @@ became worth it, the approach would be subset-partitioning before the greedy pas
 | Consumer crashes after DB commit, before offset commit | Record is redelivered; `processed_events` makes it a no-op |
 | Malformed event (shares do not sum to amount, missing id) | Non-retryable, routed straight to `expense-created.DLT` and persisted in `poison_messages` — the consumer group keeps moving |
 | Transient consumer failure | 3 retries at 2s, then DLT |
+| An expense and a payment hit the same balance row at once | Optimistic lock fails one of them; the error handler retries it and the second attempt reads the committed value. The rolled-back attempt takes its `processed_events` row with it, so the retry is not mistaken for a duplicate |
 | Entity/schema drift | Application refuses to start (`ddl-auto=validate`) |
 
 ---
@@ -153,6 +160,8 @@ GET  /expenses                      # list expenses
 GET  /balances/{groupId}            # net balances, served from the projection
 GET  /settlements/{groupId}         # settlement plan, served from the projection
 GET  /groups/{groupId}/settlements  # settlement plan, computed live from the write model
+POST /groups/{groupId}/settlements  # record a payment that actually happened -> 202
+GET  /groups/{groupId}/payments     # payments already recorded, newest first
 GET  /actuator/health | /actuator/prometheus
 ```
 
@@ -184,12 +193,28 @@ Exact split — caller supplies shares, which must sum to `amount`:
 }
 ```
 
+Settling up — `GET` proposes a plan, `POST` records that someone acted on it:
+
+```json
+{
+  "fromUserId": 2,
+  "toUserId": 1,
+  "amount": 100.00,
+  "note": "paid in cash"
+}
+```
+
+Returns `202`, not `200`. The payment row is committed synchronously, but the balances it
+moves are updated by a consumer after the relay publishes, so `GET /balances/{groupId}`
+converges a moment later. Nothing requires a payment to match a leg of the suggested plan,
+and overpaying simply flips the payer's net position rather than clamping at zero.
+
 ---
 
 ## Tests
 
 ```bash
-./mvnw test      # 46 unit tests, no Docker required
+./mvnw test      # 54 unit tests, no Docker required
 ./mvnw verify    # adds Testcontainers integration tests (needs a Docker daemon)
 ```
 
@@ -201,7 +226,8 @@ input mutation) across 200 randomised group configurations, and the allocation i
 
 Integration tests run the real broker and real Postgres to cover what unit tests cannot:
 end-to-end convergence of the projections, the outbox draining, redelivery of an identical
-event not double-counting, and a poison message not stalling the consumer group.
+event not double-counting, a poison message not stalling the consumer group, and the
+settle-up loop clearing a debt it created.
 
 `SchemaDdlGenerator` regenerates `target/generated-schema.sql` from the entity model without
 needing a database. The Flyway migration is derived from that output rather than hand-written,
@@ -221,8 +247,13 @@ Being explicit about what this does not do:
   no referential integrity behind them.
 - **No authentication.** Endpoints are `permitAll`. Adding real auth would not change any of
   the architecture above, which is why it is not the focus.
-- **Settlements are advisory.** There is no "record a payment" flow, so settling does not
-  write back to balances.
 - **Greedy settlement is not optimal**, as described above.
+- **The balance projection can briefly reorder.** Expenses and payments arrive on separate
+  topics, so their consumers can commit two mutations to the same group close together and
+  then publish their after-commit snapshots in the opposite order, leaving the read model
+  showing the earlier of the two. The authoritative `balances` table is always correct —
+  optimistic locking guarantees that — and the next mutation to the group repairs the
+  projection. Making it self-healing would mean giving the snapshot a monotonic sequence
+  and having the projector reject anything older.
 - **Single-region assumptions.** No multi-datacenter replication or partition-tolerance story
   beyond what Kafka provides out of the box.

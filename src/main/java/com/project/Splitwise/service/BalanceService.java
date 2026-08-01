@@ -2,6 +2,7 @@ package com.project.Splitwise.service;
 
 import com.project.Splitwise.domain.event.ExpenseCreatedEvent;
 import com.project.Splitwise.domain.event.GroupBalancesChangedEvent;
+import com.project.Splitwise.domain.event.PaymentRecordedEvent;
 import com.project.Splitwise.model.Balance;
 import com.project.Splitwise.model.ProcessedEvent;
 import com.project.Splitwise.repository.BalanceRepository;
@@ -57,6 +58,33 @@ public class BalanceService {
 
         // One signal per expense, not per participant. Published to Kafka only after this
         // transaction commits (see BalanceKafkaPublisher).
+        eventPublisher.publishEvent(new GroupBalancesChangedEvent(groupId));
+    }
+
+    /**
+     * Applies a settlement payment to the group's net balances.
+     *
+     * <p>A payment is the mirror image of an expense: the payer discharges debt, so their
+     * net moves up toward zero, and the recipient is owed that much less. Because balances
+     * are stored as net positions rather than a debt graph, that is the whole operation —
+     * there is no edge to find and no cycle to unwind.
+     *
+     * <p>Deduplicated through the same {@code processed_events} ledger as expenses, so a
+     * redelivered payment cannot discharge the same debt twice.
+     */
+    @Transactional
+    public void handlePayment(PaymentRecordedEvent event) {
+        if (processedRepo.existsById(event.getEventId())) {
+            return;
+        }
+
+        Long groupId = event.getGroupId();
+
+        applyDelta(groupId, event.getFromUserId(), event.getAmount());
+        applyDelta(groupId, event.getToUserId(), event.getAmount().negate());
+
+        processedRepo.save(new ProcessedEvent(event.getEventId()));
+
         eventPublisher.publishEvent(new GroupBalancesChangedEvent(groupId));
     }
 
