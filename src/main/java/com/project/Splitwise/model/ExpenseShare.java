@@ -16,6 +16,8 @@ public class ExpenseShare {
 
     private Long expenseId;
     private Long userId;
+
+    @Column(precision = 19, scale = 2)
     private BigDecimal shareAmount;
 
 }

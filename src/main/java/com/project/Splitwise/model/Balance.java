@@ -1,5 +1,6 @@
 package com.project.Splitwise.model;
 
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
@@ -20,6 +21,7 @@ public class Balance {
     @Id
     private Long userId;
 
+    @Column(nullable = false, precision = 19, scale = 2)
     private BigDecimal netBalance;
 
     protected Balance(){}

@@ -16,7 +16,7 @@ public class SettlementView {
     private Long fromUser;
     private Long toUser;
 
-    @Column(nullable = false)
+    @Column(nullable = false, precision = 19, scale = 2)
     private BigDecimal amount;
 
     protected SettlementView() {}

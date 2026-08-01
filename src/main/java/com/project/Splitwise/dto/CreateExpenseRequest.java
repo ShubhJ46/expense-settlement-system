@@ -1,17 +1,21 @@
 package com.project.Splitwise.dto;
 
-import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import lombok.Data;
-import lombok.Getter;
-import lombok.Setter;
 
 import java.math.BigDecimal;
 import java.util.List;
 
 @Data
 public class CreateExpenseRequest {
+
+    public enum SplitType {
+        /** Server divides the amount evenly across {@code participants}, penny-exact. */
+        EQUAL,
+        /** Caller supplies each user's exact share; they must sum to {@code amount}. */
+        EXACT
+    }
 
     @NotNull
     private Long groupId;
@@ -23,12 +27,21 @@ public class CreateExpenseRequest {
     @Positive
     private BigDecimal amount;
 
-    @NotEmpty
+    private String description;
+
+    /** Defaults to EXACT so existing callers keep their current behaviour. */
+    @NotNull
+    private SplitType splitType = SplitType.EXACT;
+
+    /** Required for {@link SplitType#EQUAL}. */
+    private List<Long> participants;
+
+    /** Required for {@link SplitType#EXACT}. */
     private List<Share> shares;
 
     @Data
     public static class Share {
-        public Long userId;
-        public BigDecimal amount;
+        private Long userId;
+        private BigDecimal amount;
     }
 }

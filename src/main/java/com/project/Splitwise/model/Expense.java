@@ -18,7 +18,10 @@ public class Expense {
 
     private Long groupId;
     private Long paidBy;
+
+    @Column(precision = 19, scale = 2)
     private BigDecimal amount;
+
     private String description;
 
     @CreationTimestamp

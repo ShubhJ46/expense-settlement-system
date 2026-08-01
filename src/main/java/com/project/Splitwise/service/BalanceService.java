@@ -1,77 +1,71 @@
 package com.project.Splitwise.service;
 
-import com.project.Splitwise.domain.event.BalanceChangedInternalEvent;
 import com.project.Splitwise.domain.event.ExpenseCreatedEvent;
-import com.project.Splitwise.kafka.BalanceEventProducer;
+import com.project.Splitwise.domain.event.GroupBalancesChangedEvent;
 import com.project.Splitwise.model.Balance;
 import com.project.Splitwise.model.ProcessedEvent;
 import com.project.Splitwise.repository.BalanceRepository;
 import com.project.Splitwise.repository.ProcessedEventRepository;
-import jakarta.transaction.Transactional;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 
 @Service
-@Transactional
 public class BalanceService {
 
     private final BalanceRepository balanceRepo;
     private final ProcessedEventRepository processedRepo;
-    private final BalanceEventProducer producer;
     private final ApplicationEventPublisher eventPublisher;
 
     public BalanceService(BalanceRepository balanceRepo,
                           ProcessedEventRepository processedRepo,
-                          BalanceEventProducer producer, ApplicationEventPublisher eventPublisher) {
+                          ApplicationEventPublisher eventPublisher) {
         this.balanceRepo = balanceRepo;
         this.processedRepo = processedRepo;
-        this.producer = producer;
         this.eventPublisher = eventPublisher;
     }
 
+    /**
+     * Applies one expense to the group's net balances.
+     *
+     * <p>Delivery from Kafka is at-least-once, so this method is the deduplication point:
+     * the {@code processed_events} row and the balance mutations commit in the same
+     * transaction, which makes redelivery a no-op. That combination is
+     * <em>effectively-once</em> processing — not Kafka exactly-once semantics, which would
+     * additionally require a transactional producer and {@code read_committed} consumers.
+     */
+    @Transactional
     public void handleExpense(ExpenseCreatedEvent event) {
-
         if (processedRepo.existsById(event.getEventId())) {
-            return; // Event already processed
+            return;
         }
 
         Long groupId = event.getGroupId();
 
-        // Credit paidBy user
-        BigDecimal paidAmount = event.getAmount();
-        BigDecimal paidByShare = event.getShares().stream()
-                .filter(share -> share.userId().equals(event.getPaidBy()))
-                .map(ExpenseCreatedEvent.Share::amount)
-                .findFirst()
-                .orElse(BigDecimal.ZERO);
+        // The payer fronted the whole bill, so they are owed all of it...
+        applyDelta(groupId, event.getPaidBy(), event.getAmount());
 
-        applyDelta(groupId, event.getPaidBy(), paidAmount);
-
-        // Debit all users for their share
+        // ...and then everyone, payer included, absorbs their own share. The payer's net
+        // therefore lands on (amount - their share), which is what they are actually owed.
         for (var share : event.getShares()) {
             applyDelta(groupId, share.userId(), share.amount().negate());
         }
 
         processedRepo.save(new ProcessedEvent(event.getEventId()));
+
+        // One signal per expense, not per participant. Published to Kafka only after this
+        // transaction commits (see BalanceKafkaPublisher).
+        eventPublisher.publishEvent(new GroupBalancesChangedEvent(groupId));
     }
 
     private void applyDelta(Long groupId, Long userId, BigDecimal delta) {
         Balance balance = balanceRepo
                 .findByGroupIdAndUserId(groupId, userId)
-                .orElse(new Balance(groupId, userId, BigDecimal.ZERO));
+                .orElseGet(() -> new Balance(groupId, userId, BigDecimal.ZERO));
 
         balance.add(delta);
         balanceRepo.save(balance);
-        eventPublisher.publishEvent(
-                new BalanceChangedInternalEvent(
-                        groupId,
-                        userId,
-                        balance.getNetBalance()
-                )
-        );
     }
-
-
 }

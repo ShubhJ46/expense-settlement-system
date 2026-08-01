@@ -18,7 +18,7 @@ public class SettlementQueryController {
         this.repository = repository;
     }
 
-    @GetMapping("/{groupId} ")
+    @GetMapping("/{groupId}")
     public List<SettlementView> getSettlements(@PathVariable Long groupId) {
         return repository.findByGroupId(groupId);
     }

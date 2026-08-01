@@ -9,4 +9,6 @@ public interface SettlementViewRepository
         extends JpaRepository<SettlementView, Long> {
 
     List<SettlementView> findByGroupId(Long groupId);
+
+    void deleteByGroupId(Long groupId);
 }
