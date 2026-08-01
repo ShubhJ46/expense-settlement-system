@@ -1,11 +1,23 @@
 package com.project.Splitwise.integration;
 
+import com.project.Splitwise.dto.AuthDtos;
+import com.project.Splitwise.dto.GroupDtos;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
+
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Boots the application against a real Postgres and a real Kafka broker.
@@ -43,5 +55,73 @@ public abstract class AbstractIntegrationTest {
 
         // Tighten the relay loop so tests observe convergence quickly.
         registry.add("splitwise.outbox.poll-interval-ms", () -> "200");
+
+        // Test-only signing key. Production has no default, so a real deployment cannot
+        // accidentally inherit this one.
+        registry.add("splitwise.jwt.secret",
+                () -> "integration-test-signing-key-not-used-anywhere-else");
+    }
+
+    @Autowired
+    protected TestRestTemplate restTemplate;
+
+    /** Unique per registration so parallel classes cannot collide on the email index. */
+    private static final AtomicLong USER_SEQ = new AtomicLong();
+
+    /** A registered user together with the bearer token that authenticates them. */
+    protected record TestUser(Long id, String email, String token) {
+    }
+
+    /**
+     * Registers a new user and returns them with a live token.
+     *
+     * <p>Tests go through the real {@code /auth/register} endpoint rather than inserting
+     * rows, so the token they carry is one the filter actually accepts.
+     */
+    protected TestUser registerUser() {
+        String email = "user" + USER_SEQ.incrementAndGet() + "-" + UUID.randomUUID() + "@example.test";
+
+        ResponseEntity<AuthDtos.AuthResponse> response = restTemplate.postForEntity(
+                "/auth/register",
+                new AuthDtos.RegisterRequest(email, "correct-horse-battery", "Test User"),
+                AuthDtos.AuthResponse.class);
+
+        AuthDtos.AuthResponse body = response.getBody();
+        if (body == null || body.token() == null) {
+            throw new IllegalStateException("Registration failed: " + response.getStatusCode());
+        }
+        return new TestUser(body.userId(), email, body.token());
+    }
+
+    protected HttpHeaders authHeaders(TestUser user) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(user.token());
+        return headers;
+    }
+
+    protected <T> HttpEntity<T> as(TestUser user, T body) {
+        return new HttpEntity<>(body, authHeaders(user));
+    }
+
+    protected HttpEntity<Void> as(TestUser user) {
+        return new HttpEntity<>(authHeaders(user));
+    }
+
+    /** Creates a group owned by {@code owner} and adds everyone else to it. */
+    protected Long createGroup(TestUser owner, TestUser... others) {
+        ResponseEntity<GroupDtos.GroupResponse> created = restTemplate.exchange(
+                "/groups", HttpMethod.POST,
+                as(owner, new GroupDtos.CreateGroupRequest("test group")),
+                GroupDtos.GroupResponse.class);
+
+        Long groupId = created.getBody().id();
+
+        for (TestUser other : others) {
+            restTemplate.exchange("/groups/" + groupId + "/members", HttpMethod.POST,
+                    as(owner, new GroupDtos.AddMemberRequest(other.id())),
+                    GroupDtos.GroupResponse.class);
+        }
+        return groupId;
     }
 }

@@ -6,6 +6,7 @@ import com.project.Splitwise.factory.ExpenseEventFactory;
 import com.project.Splitwise.model.Expense;
 import com.project.Splitwise.model.ExpenseShare;
 import com.project.Splitwise.outbox.OutboxWriter;
+import com.project.Splitwise.security.GroupAccess;
 import com.project.Splitwise.repository.ExpenseRepository;
 import com.project.Splitwise.repository.ExpenseShareRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,12 +40,16 @@ class ExpenseServiceTest {
     private ExpenseShareRepository shareRepo;
     @Mock
     private OutboxWriter outboxWriter;
+    /** Permissive by default; the authorization rules themselves are covered in GroupAccessTest. */
+    @Mock
+    private GroupAccess groupAccess;
 
     private ExpenseService expenseService;
 
     @BeforeEach
     void setUp() {
-        expenseService = new ExpenseService(expenseRepo, shareRepo, new ExpenseEventFactory(), outboxWriter);
+        expenseService = new ExpenseService(
+                expenseRepo, shareRepo, new ExpenseEventFactory(), outboxWriter, groupAccess);
 
         when(expenseRepo.save(any(Expense.class))).thenAnswer(inv -> {
             Expense e = inv.getArgument(0);

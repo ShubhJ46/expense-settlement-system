@@ -5,6 +5,8 @@ import com.project.Splitwise.dto.RecordPaymentRequest;
 import com.project.Splitwise.model.Payment;
 import com.project.Splitwise.outbox.OutboxWriter;
 import com.project.Splitwise.repository.PaymentRepository;
+import com.project.Splitwise.security.GroupAccess;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,10 +20,14 @@ public class PaymentService {
 
     private final PaymentRepository paymentRepo;
     private final OutboxWriter outboxWriter;
+    private final GroupAccess groupAccess;
 
-    public PaymentService(PaymentRepository paymentRepo, OutboxWriter outboxWriter) {
+    public PaymentService(PaymentRepository paymentRepo,
+                          OutboxWriter outboxWriter,
+                          GroupAccess groupAccess) {
         this.paymentRepo = paymentRepo;
         this.outboxWriter = outboxWriter;
+        this.groupAccess = groupAccess;
     }
 
     /**
@@ -82,10 +88,23 @@ public class PaymentService {
                             + " cannot settle with themselves");
         }
         ShareAllocator.requireRepresentable(req.getAmount());
+
+        Long caller = groupAccess.requireMember(groupId);
+        groupAccess.requireAllMembers(groupId, List.of(req.getFromUserId(), req.getToUserId()));
+
+        // Being in the group is not enough to record somebody else's payment: a member could
+        // otherwise clear their own debt by filing a transfer between two other people, or
+        // invent a payment from someone who never made one. Either party to the transfer may
+        // record it, since in practice both know it happened.
+        if (!caller.equals(req.getFromUserId()) && !caller.equals(req.getToUserId())) {
+            throw new AccessDeniedException(
+                    "A payment can only be recorded by the payer or the payee");
+        }
     }
 
     @Transactional(readOnly = true)
     public List<Payment> getPayments(Long groupId) {
+        groupAccess.requireMember(groupId);
         return paymentRepo.findByGroupIdOrderByCreatedAtDesc(groupId);
     }
 }

@@ -5,17 +5,17 @@ import com.project.Splitwise.readmodel.SettlementView;
 import com.project.Splitwise.readmodel.repository.GroupBalanceViewRepository;
 import com.project.Splitwise.readmodel.repository.SettlementViewRepository;
 import com.project.Splitwise.repository.OutboxEventRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -29,11 +29,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class ExpenseFlowIT extends AbstractIntegrationTest {
 
-    /** Fresh group per test so the shared containers do not leak state between cases. */
-    private static final AtomicLong GROUP_IDS = new AtomicLong(9_000);
-
-    @Autowired
-    private TestRestTemplate restTemplate;
     @Autowired
     private GroupBalanceViewRepository balanceViews;
     @Autowired
@@ -41,23 +36,42 @@ class ExpenseFlowIT extends AbstractIntegrationTest {
     @Autowired
     private OutboxEventRepository outboxEvents;
 
-    private static CreateExpenseRequest equalSplit(long groupId, String amount, List<Long> participants) {
+    private TestUser payer;
+    private TestUser second;
+    private TestUser third;
+    private Long groupId;
+
+    /** A real group with real members, since the API now refuses anything else. */
+    @BeforeEach
+    void setUpGroup() {
+        payer = registerUser();
+        second = registerUser();
+        third = registerUser();
+        groupId = createGroup(payer, second, third);
+    }
+
+    private List<Long> everyone() {
+        return List.of(payer.id(), second.id(), third.id());
+    }
+
+    private CreateExpenseRequest equalSplit(String amount) {
         CreateExpenseRequest req = new CreateExpenseRequest();
         req.setGroupId(groupId);
-        req.setPaidBy(participants.get(0));
+        req.setPaidBy(payer.id());
         req.setAmount(new BigDecimal(amount));
         req.setSplitType(CreateExpenseRequest.SplitType.EQUAL);
-        req.setParticipants(participants);
+        req.setParticipants(everyone());
         return req;
+    }
+
+    private ResponseEntity<String> postExpense(CreateExpenseRequest req) {
+        return restTemplate.exchange("/expenses", HttpMethod.POST, as(payer, req), String.class);
     }
 
     @Test
     @DisplayName("an expense posted over HTTP converges into the balance projection")
     void expensePropagatesToReadModel() {
-        long groupId = GROUP_IDS.incrementAndGet();
-
-        ResponseEntity<String> response = restTemplate.postForEntity(
-                "/expenses", equalSplit(groupId, "300.00", List.of(1L, 2L, 3L)), String.class);
+        ResponseEntity<String> response = postExpense(equalSplit("300.00"));
 
         assertEquals(HttpStatus.CREATED, response.getStatusCode());
 
@@ -66,8 +80,10 @@ class ExpenseFlowIT extends AbstractIntegrationTest {
             assertEquals(3, views.size());
 
             // Payer fronted 300 and owes 100 of it, so they are up 200.
-            var payer = views.stream().filter(v -> v.getUserId() == 1L).findFirst().orElseThrow();
-            assertEquals(0, payer.getNetBalance().compareTo(new BigDecimal("200.00")));
+            var view = views.stream()
+                    .filter(v -> v.getUserId().equals(payer.id()))
+                    .findFirst().orElseThrow();
+            assertEquals(0, view.getNetBalance().compareTo(new BigDecimal("200.00")));
 
             // And the group nets to zero, which is the invariant that must never break.
             BigDecimal total = views.stream()
@@ -80,10 +96,7 @@ class ExpenseFlowIT extends AbstractIntegrationTest {
     @Test
     @DisplayName("settlement_view is actually populated — it used to be permanently empty")
     void settlementProjectionIsPopulated() {
-        long groupId = GROUP_IDS.incrementAndGet();
-
-        restTemplate.postForEntity("/expenses",
-                equalSplit(groupId, "300.00", List.of(1L, 2L, 3L)), String.class);
+        postExpense(equalSplit("300.00"));
 
         await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
             List<SettlementView> plan = settlementViews.findByGroupId(groupId);
@@ -94,7 +107,7 @@ class ExpenseFlowIT extends AbstractIntegrationTest {
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
             assertEquals(0, owed.compareTo(new BigDecimal("200.00")));
 
-            assertTrue(plan.stream().allMatch(s -> s.getToUser() == 1L),
+            assertTrue(plan.stream().allMatch(s -> s.getToUser().equals(payer.id())),
                     "everyone should be paying the person who fronted the bill");
         });
     }
@@ -102,10 +115,7 @@ class ExpenseFlowIT extends AbstractIntegrationTest {
     @Test
     @DisplayName("the outbox drains: no event is left staged once the relay has run")
     void outboxDrainsToEmpty() {
-        long groupId = GROUP_IDS.incrementAndGet();
-
-        restTemplate.postForEntity("/expenses",
-                equalSplit(groupId, "99.99", List.of(1L, 2L, 3L)), String.class);
+        postExpense(equalSplit("99.99"));
 
         await().atMost(Duration.ofSeconds(30))
                 .until(() -> outboxEvents.countByPublishedAtIsNull() == 0);
@@ -114,10 +124,7 @@ class ExpenseFlowIT extends AbstractIntegrationTest {
     @Test
     @DisplayName("a 10.00 three-way split still nets to zero across the projection")
     void indivisibleSplitStillBalances() {
-        long groupId = GROUP_IDS.incrementAndGet();
-
-        restTemplate.postForEntity("/expenses",
-                equalSplit(groupId, "10.00", List.of(1L, 2L, 3L)), String.class);
+        postExpense(equalSplit("10.00"));
 
         await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
             var views = balanceViews.findByGroupId(groupId);
@@ -136,19 +143,34 @@ class ExpenseFlowIT extends AbstractIntegrationTest {
     @Test
     void rejectsExactSharesThatDoNotSumToTotal() {
         CreateExpenseRequest req = new CreateExpenseRequest();
-        req.setGroupId(GROUP_IDS.incrementAndGet());
-        req.setPaidBy(1L);
+        req.setGroupId(groupId);
+        req.setPaidBy(payer.id());
         req.setAmount(new BigDecimal("100.00"));
         req.setSplitType(CreateExpenseRequest.SplitType.EXACT);
 
         CreateExpenseRequest.Share share = new CreateExpenseRequest.Share();
-        share.setUserId(1L);
+        share.setUserId(payer.id());
         share.setAmount(new BigDecimal("99.99"));
         req.setShares(List.of(share));
 
-        ResponseEntity<String> response = restTemplate.postForEntity("/expenses", req, String.class);
+        ResponseEntity<String> response = postExpense(req);
 
-        assertTrue(response.getStatusCode().is4xxClientError() || response.getStatusCode().is5xxServerError(),
-                "a non-balancing split must not be accepted, got " + response.getStatusCode());
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode(),
+                "a non-balancing split is the caller's error, not a server fault");
+    }
+
+    @Test
+    @DisplayName("expenses are listed per group and paged, not dumped wholesale")
+    void expenseListingIsScopedAndPaged() {
+        postExpense(equalSplit("300.00"));
+        postExpense(equalSplit("60.00"));
+
+        ResponseEntity<String> page = restTemplate.exchange(
+                "/expenses?groupId=" + groupId + "&size=1", HttpMethod.GET, as(payer), String.class);
+
+        assertEquals(HttpStatus.OK, page.getStatusCode());
+        assertTrue(page.getBody().contains("\"totalElements\":2"),
+                "expected a page of 2 total, got " + page.getBody());
+        assertTrue(page.getBody().contains("\"size\":1"), "page size should be honoured");
     }
 }

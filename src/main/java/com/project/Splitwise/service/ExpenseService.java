@@ -8,6 +8,9 @@ import com.project.Splitwise.model.ExpenseShare;
 import com.project.Splitwise.outbox.OutboxWriter;
 import com.project.Splitwise.repository.ExpenseRepository;
 import com.project.Splitwise.repository.ExpenseShareRepository;
+import com.project.Splitwise.security.GroupAccess;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,15 +27,18 @@ public class ExpenseService {
     private final ExpenseShareRepository shareRepo;
     private final ExpenseEventFactory eventFactory;
     private final OutboxWriter outboxWriter;
+    private final GroupAccess groupAccess;
 
     public ExpenseService(ExpenseRepository expenseRepo,
                           ExpenseShareRepository shareRepo,
                           ExpenseEventFactory eventFactory,
-                          OutboxWriter outboxWriter) {
+                          OutboxWriter outboxWriter,
+                          GroupAccess groupAccess) {
         this.expenseRepo = expenseRepo;
         this.shareRepo = shareRepo;
         this.eventFactory = eventFactory;
         this.outboxWriter = outboxWriter;
+        this.groupAccess = groupAccess;
     }
 
     /**
@@ -45,7 +51,17 @@ public class ExpenseService {
      */
     @Transactional
     public Expense createExpense(CreateExpenseRequest req) {
+        // Authorization before anything else: the caller must be in the group, and so must
+        // everyone the expense touches. Without the second check a legitimate member could
+        // charge a share to somebody who was never in the group.
+        groupAccess.requireMember(req.getGroupId());
+
         List<CreateExpenseRequest.Share> shares = resolveShares(req);
+
+        List<Long> participants = new ArrayList<>();
+        participants.add(req.getPaidBy());
+        shares.forEach(s -> participants.add(s.getUserId()));
+        groupAccess.requireAllMembers(req.getGroupId(), participants);
 
         Expense expense = new Expense();
         expense.setGroupId(req.getGroupId());
@@ -135,8 +151,16 @@ public class ExpenseService {
         }
     }
 
+    /**
+     * Expenses for one group, a page at a time.
+     *
+     * <p>This replaces an unscoped, unpaginated {@code findAll()}. That was a mild
+     * performance wart before there was any concept of a caller; with authorization in place
+     * it would be an outright leak, handing every expense in the system to anyone who asked.
+     */
     @Transactional(readOnly = true)
-    public List<Expense> getAllExpenses() {
-        return expenseRepo.findAll();
+    public Page<Expense> getExpenses(Long groupId, Pageable pageable) {
+        groupAccess.requireMember(groupId);
+        return expenseRepo.findByGroupId(groupId, pageable);
     }
 }

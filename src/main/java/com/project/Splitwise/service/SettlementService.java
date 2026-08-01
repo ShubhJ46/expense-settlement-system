@@ -4,6 +4,7 @@ import com.project.Splitwise.domain.settlement.Settlement;
 import com.project.Splitwise.domain.settlement.UserBalance;
 import com.project.Splitwise.dto.SettlementResponse;
 import com.project.Splitwise.repository.BalanceRepository;
+import com.project.Splitwise.security.GroupAccess;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -13,9 +14,11 @@ import java.util.List;
 public class SettlementService {
 
     private final BalanceRepository balanceRepository;
+    private final GroupAccess groupAccess;
 
-    public SettlementService(BalanceRepository balanceRepository) {
+    public SettlementService(BalanceRepository balanceRepository, GroupAccess groupAccess) {
         this.balanceRepository = balanceRepository;
+        this.groupAccess = groupAccess;
     }
 
     /**
@@ -27,6 +30,8 @@ public class SettlementService {
      */
     @Transactional(readOnly = true)
     public SettlementResponse getSettlements(Long groupId) {
+        groupAccess.requireMember(groupId);
+
         List<UserBalance> positions = balanceRepository.findByGroupId(groupId).stream()
                 .map(b -> new UserBalance(b.getUserId(), b.getNetBalance()))
                 .toList();

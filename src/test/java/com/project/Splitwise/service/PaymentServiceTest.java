@@ -4,6 +4,7 @@ import com.project.Splitwise.domain.event.PaymentRecordedEvent;
 import com.project.Splitwise.dto.RecordPaymentRequest;
 import com.project.Splitwise.model.Payment;
 import com.project.Splitwise.outbox.OutboxWriter;
+import com.project.Splitwise.security.GroupAccess;
 import com.project.Splitwise.repository.PaymentRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,8 @@ class PaymentServiceTest {
     private PaymentRepository paymentRepo;
     @Mock
     private OutboxWriter outboxWriter;
+    @Mock
+    private GroupAccess groupAccess;
     @InjectMocks
     private PaymentService paymentService;
 
@@ -42,7 +45,9 @@ class PaymentServiceTest {
         return req;
     }
 
+    /** Caller is user 1, who is the payer in these cases, so authorization passes. */
     private void stubSave() {
+        when(groupAccess.requireMember(7L)).thenReturn(1L);
         when(paymentRepo.save(any(Payment.class))).thenAnswer(inv -> {
             Payment p = inv.getArgument(0);
             p.setId(42L);

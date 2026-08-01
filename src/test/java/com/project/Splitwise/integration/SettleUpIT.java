@@ -4,17 +4,17 @@ import com.project.Splitwise.dto.CreateExpenseRequest;
 import com.project.Splitwise.dto.RecordPaymentRequest;
 import com.project.Splitwise.dto.SettlementResponse;
 import com.project.Splitwise.readmodel.repository.GroupBalanceViewRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -29,102 +29,99 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class SettleUpIT extends AbstractIntegrationTest {
 
-    private static final AtomicLong GROUP_IDS = new AtomicLong(11_000);
-
-    @Autowired
-    private TestRestTemplate restTemplate;
     @Autowired
     private GroupBalanceViewRepository balanceViews;
 
-    private static CreateExpenseRequest equalSplit(long groupId, String amount, List<Long> participants) {
-        CreateExpenseRequest req = new CreateExpenseRequest();
-        req.setGroupId(groupId);
-        req.setPaidBy(participants.get(0));
-        req.setAmount(new BigDecimal(amount));
-        req.setSplitType(CreateExpenseRequest.SplitType.EQUAL);
-        req.setParticipants(participants);
-        return req;
+    private TestUser payer;
+    private TestUser debtor;
+    private TestUser other;
+    private Long groupId;
+
+    @BeforeEach
+    void setUpGroup() {
+        payer = registerUser();
+        debtor = registerUser();
+        other = registerUser();
+        groupId = createGroup(payer, debtor, other);
     }
 
-    private static RecordPaymentRequest payment(long from, long to, String amount) {
-        RecordPaymentRequest req = new RecordPaymentRequest();
-        req.setFromUserId(from);
-        req.setToUserId(to);
+    private void postEqualExpense(String amount) {
+        CreateExpenseRequest req = new CreateExpenseRequest();
+        req.setGroupId(groupId);
+        req.setPaidBy(payer.id());
         req.setAmount(new BigDecimal(amount));
-        return req;
+        req.setSplitType(CreateExpenseRequest.SplitType.EQUAL);
+        req.setParticipants(List.of(payer.id(), debtor.id(), other.id()));
+
+        restTemplate.exchange("/expenses", HttpMethod.POST, as(payer, req), String.class);
+    }
+
+    private ResponseEntity<String> pay(TestUser caller, TestUser from, TestUser to, String amount) {
+        RecordPaymentRequest req = new RecordPaymentRequest();
+        req.setFromUserId(from.id());
+        req.setToUserId(to.id());
+        req.setAmount(new BigDecimal(amount));
+
+        return restTemplate.exchange("/groups/" + groupId + "/settlements",
+                HttpMethod.POST, as(caller, req), String.class);
     }
 
     /** Polls the read model until the given user's net balance matches. */
-    private void awaitNet(long groupId, long userId, String expected) {
+    private void awaitNet(TestUser user, String expected) {
         await().atMost(Duration.ofSeconds(45)).untilAsserted(() -> {
             BigDecimal actual = balanceViews.findByGroupId(groupId).stream()
-                    .filter(v -> v.getUserId() == userId)
+                    .filter(v -> v.getUserId().equals(user.id()))
                     .map(v -> v.getNetBalance())
                     .findFirst()
                     .orElse(null);
-            assertNotNull(actual, () -> "no projected balance yet for user " + userId);
+            assertNotNull(actual, () -> "no projected balance yet for user " + user.id());
             assertEquals(0, new BigDecimal(expected).compareTo(actual),
                     () -> "expected " + expected + " but was " + actual);
         });
     }
 
-    private BigDecimal groupTotal(long groupId) {
-        return balanceViews.findByGroupId(groupId).stream()
-                .map(v -> v.getNetBalance())
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-
     @Test
     @DisplayName("paying a debt in full clears it from the balance projection")
     void paymentClearsTheDebt() {
-        long groupId = GROUP_IDS.incrementAndGet();
+        postEqualExpense("300.00");
+        awaitNet(debtor, "-100.00");
 
-        restTemplate.postForEntity("/expenses",
-                equalSplit(groupId, "300.00", List.of(1L, 2L, 3L)), String.class);
-
-        awaitNet(groupId, 2L, "-100.00");
-
-        ResponseEntity<String> response = restTemplate.postForEntity(
-                "/groups/" + groupId + "/settlements", payment(2L, 1L, "100.00"), String.class);
-
-        assertEquals(HttpStatus.ACCEPTED, response.getStatusCode());
+        assertEquals(HttpStatus.ACCEPTED, pay(debtor, debtor, payer, "100.00").getStatusCode());
 
         // The debt is discharged asynchronously, through the same outbox and consumer path
         // as the expense that created it.
-        awaitNet(groupId, 2L, "0.00");
-        awaitNet(groupId, 1L, "100.00");
-        awaitNet(groupId, 3L, "-100.00");
+        awaitNet(debtor, "0.00");
+        awaitNet(payer, "100.00");
+        awaitNet(other, "-100.00");
 
-        assertEquals(0, groupTotal(groupId).compareTo(BigDecimal.ZERO),
+        BigDecimal total = balanceViews.findByGroupId(groupId).stream()
+                .map(v -> v.getNetBalance())
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertEquals(0, total.compareTo(BigDecimal.ZERO),
                 "the group must still net to zero after a payment");
     }
 
     @Test
     @DisplayName("once everyone has paid, the settlement engine proposes nothing")
     void fullySettledGroupHasNoSuggestions() {
-        long groupId = GROUP_IDS.incrementAndGet();
+        postEqualExpense("300.00");
+        awaitNet(payer, "200.00");
 
-        restTemplate.postForEntity("/expenses",
-                equalSplit(groupId, "300.00", List.of(1L, 2L, 3L)), String.class);
-        awaitNet(groupId, 1L, "200.00");
-
-        // The plan says 2 and 3 each owe 1 a hundred. Pay exactly that.
-        ResponseEntity<SettlementResponse> plan = restTemplate.getForEntity(
-                "/groups/" + groupId + "/settlements", SettlementResponse.class);
+        ResponseEntity<SettlementResponse> plan = restTemplate.exchange(
+                "/groups/" + groupId + "/settlements", HttpMethod.GET, as(payer), SettlementResponse.class);
         assertEquals(2, plan.getBody().getSettlements().size());
 
-        restTemplate.postForEntity("/groups/" + groupId + "/settlements",
-                payment(2L, 1L, "100.00"), String.class);
-        restTemplate.postForEntity("/groups/" + groupId + "/settlements",
-                payment(3L, 1L, "100.00"), String.class);
+        pay(debtor, debtor, payer, "100.00");
+        pay(other, other, payer, "100.00");
 
-        awaitNet(groupId, 1L, "0.00");
-        awaitNet(groupId, 2L, "0.00");
-        awaitNet(groupId, 3L, "0.00");
+        awaitNet(payer, "0.00");
+        awaitNet(debtor, "0.00");
+        awaitNet(other, "0.00");
 
         await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
-            ResponseEntity<SettlementResponse> settled = restTemplate.getForEntity(
-                    "/groups/" + groupId + "/settlements", SettlementResponse.class);
+            ResponseEntity<SettlementResponse> settled = restTemplate.exchange(
+                    "/groups/" + groupId + "/settlements", HttpMethod.GET, as(payer),
+                    SettlementResponse.class);
             assertTrue(settled.getBody().getSettlements().isEmpty(),
                     "a settled group has nothing left to suggest");
         });
@@ -133,31 +130,45 @@ class SettleUpIT extends AbstractIntegrationTest {
     @Test
     @DisplayName("a partial payment reduces the debt without clearing it")
     void partialPaymentReducesTheDebt() {
-        long groupId = GROUP_IDS.incrementAndGet();
+        postEqualExpense("300.00");
+        awaitNet(debtor, "-100.00");
 
-        restTemplate.postForEntity("/expenses",
-                equalSplit(groupId, "300.00", List.of(1L, 2L, 3L)), String.class);
-        awaitNet(groupId, 2L, "-100.00");
+        pay(debtor, debtor, payer, "40.00");
 
-        restTemplate.postForEntity("/groups/" + groupId + "/settlements",
-                payment(2L, 1L, "40.00"), String.class);
-
-        awaitNet(groupId, 2L, "-60.00");
-        awaitNet(groupId, 1L, "160.00");
+        awaitNet(debtor, "-60.00");
+        awaitNet(payer, "160.00");
     }
 
     @Test
     @DisplayName("a self-transfer is rejected at the API rather than corrupting balances")
     void selfTransferIsRejected() {
-        long groupId = GROUP_IDS.incrementAndGet();
+        ResponseEntity<String> response = pay(payer, payer, payer, "10.00");
 
-        ResponseEntity<String> response = restTemplate.postForEntity(
-                "/groups/" + groupId + "/settlements", payment(1L, 1L, "10.00"), String.class);
-
-        assertTrue(response.getStatusCode().is4xxClientError() || response.getStatusCode().is5xxServerError(),
-                "expected a self-transfer to be refused, got " + response.getStatusCode());
-
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
         assertTrue(balanceViews.findByGroupId(groupId).isEmpty(),
                 "a rejected payment must not create balance rows");
+    }
+
+    @Test
+    @DisplayName("a member cannot record a payment between two other people")
+    void thirdPartyCannotRecordSomeoneElsesPayment() {
+        postEqualExpense("300.00");
+        awaitNet(debtor, "-100.00");
+
+        // `other` is a legitimate group member, but this transfer is nothing to do with them.
+        ResponseEntity<String> response = pay(other, debtor, payer, "100.00");
+
+        assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
+        awaitNet(debtor, "-100.00");
+    }
+
+    @Test
+    @DisplayName("the payee may also record the payment, not just the payer")
+    void payeeCanRecordThePayment() {
+        postEqualExpense("300.00");
+        awaitNet(debtor, "-100.00");
+
+        assertEquals(HttpStatus.ACCEPTED, pay(payer, debtor, payer, "100.00").getStatusCode());
+        awaitNet(debtor, "0.00");
     }
 }

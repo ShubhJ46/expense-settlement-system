@@ -127,6 +127,36 @@ became worth it, the approach would be subset-partitioning before the greedy pas
 
 ---
 
+## Authentication and authorization
+
+Authentication is a stateless HS256 JWT: `/auth/login` verifies a BCrypt hash and returns a
+token whose subject is the user id. A filter turns that into the request's principal. Nothing
+else in the service reads an identity from a request body or a path variable — who you *are*
+comes only from a verified signature, while who a request *names* is untrusted input.
+
+Authorization is group membership, and every group-scoped operation funnels through one
+component:
+
+```java
+groupAccess.requireMember(groupId);                   // may the caller touch this group?
+groupAccess.requireAllMembers(groupId, participants); // does everyone named belong to it?
+```
+
+The second check matters as much as the first. Without it a legitimate member of a group
+could still write an expense charging a share to somebody who was never in it — authenticated,
+authorized for the group, and still corrupting a stranger's balance.
+
+Two smaller decisions worth naming:
+
+- **The filter chain denies by default.** `anyRequest().authenticated()`, with an explicit
+  short list of open endpoints. The previous configuration listed the business endpoints as
+  `permitAll` and left `anyRequest().authenticated()` covering nothing that existed, so a new
+  controller is now protected on the day it is written rather than the day somebody notices.
+- **A refusal does not say whether the group exists.** "No access to group 41" is returned
+  whether or not group 41 is real, so the endpoint cannot be used to enumerate ids.
+
+---
+
 ## Failure modes
 
 | Failure | Behaviour |
@@ -138,6 +168,7 @@ became worth it, the approach would be subset-partitioning before the greedy pas
 | Transient consumer failure | 3 retries at 2s, then DLT |
 | An expense and a payment hit the same balance row at once | Optimistic lock fails one of them; the error handler retries it and the second attempt reads the committed value. The rolled-back attempt takes its `processed_events` row with it, so the retry is not mistaken for a duplicate |
 | Entity/schema drift | Application refuses to start (`ddl-auto=validate`) |
+| `JWT_SECRET` unset, or shorter than 32 bytes | Application refuses to start rather than signing tokens with a weak or published key |
 
 ---
 
@@ -145,24 +176,51 @@ became worth it, the approach would be subset-partitioning before the greedy pas
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d
+export JWT_SECRET='a-long-random-string-of-at-least-32-bytes'
 ./mvnw spring-boot:run
 ```
 
-Flyway applies the schema on startup. Configuration falls back to the compose defaults, so
-no setup is needed locally; override via `DB_URL`, `DB_USER`, `DB_PASSWORD` and
+Flyway applies the schema on startup. Database and broker settings fall back to the compose
+defaults, so no setup is needed locally; override via `DB_URL`, `DB_USER`, `DB_PASSWORD` and
 `KAFKA_BOOTSTRAP_SERVERS` anywhere else.
+
+`JWT_SECRET` has **no default on purpose**. A deployment that forgets it fails at startup
+rather than signing every token with a value published in this repository's git history.
 
 ### API
 
+Everything except registration, login and the health probes requires
+`Authorization: Bearer <token>`.
+
 ```http
+POST /auth/register                 # -> 201 with a token
+POST /auth/login                    # -> 200 with a token
+
+POST /groups                        # create a group; the creator is its first member
+GET  /groups                        # the caller's own groups, and only those
+GET  /groups/{groupId}              # one group, if the caller is in it
+POST /groups/{groupId}/members      # add a user to the group
+
 POST /expenses                      # create an expense (EQUAL or EXACT split)
-GET  /expenses                      # list expenses
+GET  /expenses?groupId=&page=&size= # one group's expenses, paged
 GET  /balances/{groupId}            # net balances, served from the projection
 GET  /settlements/{groupId}         # settlement plan, served from the projection
 GET  /groups/{groupId}/settlements  # settlement plan, computed live from the write model
 POST /groups/{groupId}/settlements  # record a payment that actually happened -> 202
 GET  /groups/{groupId}/payments     # payments already recorded, newest first
+
 GET  /actuator/health | /actuator/prometheus
+```
+
+A full round trip:
+
+```bash
+TOKEN=$(curl -sX POST localhost:8080/auth/register -H 'Content-Type: application/json' \
+  -d '{"email":"a@example.com","password":"correct-horse-battery","displayName":"A"}' \
+  | jq -r .token)
+
+curl -X POST localhost:8080/groups -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"name":"Trip"}'
 ```
 
 Equal split — the server does the division, so rounding is handled server-side:
@@ -214,7 +272,7 @@ and overpaying simply flips the payer's net position rather than clamping at zer
 ## Tests
 
 ```bash
-./mvnw test      # 54 unit tests, no Docker required
+./mvnw test      # 66 unit tests, no Docker required
 ./mvnw verify    # adds Testcontainers integration tests (needs a Docker daemon)
 ```
 
@@ -228,6 +286,12 @@ Integration tests run the real broker and real Postgres to cover what unit tests
 end-to-end convergence of the projections, the outbox draining, redelivery of an identical
 event not double-counting, a poison message not stalling the consumer group, and the
 settle-up loop clearing a debt it created.
+
+`AuthorizationIT` is the regression net for the access boundary, and asserts the negative
+cases rather than only the happy path: every business endpoint refuses an anonymous caller,
+a forged token is rejected, a non-member can neither read nor write another group's data, a
+member cannot charge a share to somebody outside the group, `GET /groups` returns only the
+caller's own groups, and no response ever carries a password hash.
 
 `SchemaDdlGenerator` regenerates `target/generated-schema.sql` from the entity model without
 needing a database. The Flyway migration is derived from that output rather than hand-written,
@@ -243,11 +307,15 @@ which is what keeps `ddl-auto=validate` honest:
 
 Being explicit about what this does not do:
 
-- **No users or groups tables.** `userId` and `groupId` are unvalidated identifiers; there is
-  no referential integrity behind them.
-- **No authentication.** Endpoints are `permitAll`. Adding real auth would not change any of
-  the architecture above, which is why it is not the focus.
 - **Greedy settlement is not optimal**, as described above.
+- **Tokens cannot be revoked before they expire.** Authentication is a stateless signed JWT
+  with a 12-hour TTL and no server-side session, so a logout is a client-side delete. Real
+  revocation needs either short-lived access tokens with refresh, or a deny-list the filter
+  checks — which trades away the stateless property that makes the current design cheap.
+- **No rate limiting on login.** Nothing slows down repeated password guesses; BCrypt's work
+  factor is the only cost imposed on an attacker.
+- **Flat membership.** Any member can add another member or record a payment they are party
+  to. There are no roles, no invitations, and no removal.
 - **The balance projection can briefly reorder.** Expenses and payments arrive on separate
   topics, so their consumers can commit two mutations to the same group close together and
   then publish their after-commit snapshots in the opposite order, leaving the read model

@@ -3,6 +3,7 @@ package com.project.Splitwise.service;
 import com.project.Splitwise.dto.SettlementResponse;
 import com.project.Splitwise.model.Balance;
 import com.project.Splitwise.repository.BalanceRepository;
+import com.project.Splitwise.security.GroupAccess;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -25,6 +26,9 @@ class SettlementServiceTest {
 
     @Mock
     private BalanceRepository balanceRepository;
+    /** Permissive here; the authorization rules themselves are covered by AuthorizationIT. */
+    @Mock
+    private GroupAccess groupAccess;
 
     @InjectMocks
     private SettlementService settlementService;
