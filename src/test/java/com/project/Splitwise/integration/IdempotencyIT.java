@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Proves the effectively-once claim by doing what Kafka actually does on retry: delivering
@@ -47,10 +48,19 @@ class IdempotencyIT extends AbstractIntegrationTest {
                 .build();
     }
 
-    private BigDecimal netOf(long groupId, long userId) {
-        return balanceRepository.findByGroupIdAndUserId(groupId, userId)
+    /**
+     * Asserts the net balance, treating a not-yet-written row as a retryable failure rather
+     * than an error. Awaitility retries {@link AssertionError} but propagates anything else,
+     * so a null here would abort the await on the first poll instead of waiting for the
+     * consumer to catch up.
+     */
+    private void assertNet(long groupId, long userId, String expected) {
+        BigDecimal actual = balanceRepository.findByGroupIdAndUserId(groupId, userId)
                 .map(Balance::getNetBalance)
                 .orElse(null);
+        assertNotNull(actual, () -> "no balance row yet for group " + groupId + " user " + userId);
+        assertEquals(0, new BigDecimal(expected).compareTo(actual),
+                () -> "expected " + expected + " but was " + actual);
     }
 
     @Test
@@ -62,8 +72,7 @@ class IdempotencyIT extends AbstractIntegrationTest {
 
         kafkaTemplate.send("expense-created", key, event(eventId, groupId));
 
-        await().atMost(Duration.ofSeconds(30)).untilAsserted(() ->
-                assertEquals(0, new BigDecimal("200.00").compareTo(netOf(groupId, 1L))));
+        await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> assertNet(groupId, 1L, "200.00"));
 
         // Same eventId, same payload — exactly what an at-least-once broker replays.
         kafkaTemplate.send("expense-created", key, event(eventId, groupId));
@@ -72,9 +81,9 @@ class IdempotencyIT extends AbstractIntegrationTest {
         // Give the consumer time to actually process (and ignore) both duplicates before
         // asserting; otherwise this passes simply because nothing has been consumed yet.
         await().during(Duration.ofSeconds(5)).atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
-            assertEquals(0, new BigDecimal("200.00").compareTo(netOf(groupId, 1L)));
-            assertEquals(0, new BigDecimal("-100.00").compareTo(netOf(groupId, 2L)));
-            assertEquals(0, new BigDecimal("-100.00").compareTo(netOf(groupId, 3L)));
+            assertNet(groupId, 1L, "200.00");
+            assertNet(groupId, 2L, "-100.00");
+            assertNet(groupId, 3L, "-100.00");
         });
     }
 
@@ -87,8 +96,7 @@ class IdempotencyIT extends AbstractIntegrationTest {
         kafkaTemplate.send("expense-created", key, event(UUID.randomUUID().toString(), groupId));
         kafkaTemplate.send("expense-created", key, event(UUID.randomUUID().toString(), groupId));
 
-        await().atMost(Duration.ofSeconds(30)).untilAsserted(() ->
-                assertEquals(0, new BigDecimal("400.00").compareTo(netOf(groupId, 1L))));
+        await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> assertNet(groupId, 1L, "400.00"));
     }
 
     @Test
@@ -112,7 +120,6 @@ class IdempotencyIT extends AbstractIntegrationTest {
         // The consumer group must keep moving: a good event behind the poison one still lands.
         kafkaTemplate.send("expense-created", key, event(UUID.randomUUID().toString(), groupId));
 
-        await().atMost(Duration.ofSeconds(45)).untilAsserted(() ->
-                assertEquals(0, new BigDecimal("200.00").compareTo(netOf(groupId, 1L))));
+        await().atMost(Duration.ofSeconds(45)).untilAsserted(() -> assertNet(groupId, 1L, "200.00"));
     }
 }
