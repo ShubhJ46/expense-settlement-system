@@ -264,7 +264,7 @@ counter is the only evidence it works. It is instrumented for exactly that reaso
 
 | Failure | Behaviour |
 |---|---|
-| Broker unreachable when an expense is created | Expense still commits; event stays in the outbox and publishes when the broker returns |
+| Broker unreachable when an expense is created | Expense still commits; event stays in the outbox and publishes when the broker returns — covered by `BrokerOutageIT`, which pauses the broker mid-flight |
 | Relay dies mid-publish | Row stays unpublished, next poll resends; consumer dedupe absorbs the duplicate |
 | Consumer crashes after DB commit, before offset commit | Record is redelivered; `processed_events` makes it a no-op |
 | Malformed event (shares do not sum to amount, missing id) | Non-retryable, routed straight to `expense-created.DLT` and persisted in `poison_messages` — the consumer group keeps moving |
@@ -390,6 +390,19 @@ Integration tests run the real broker and real Postgres to cover what unit tests
 end-to-end convergence of the projections, the outbox draining, redelivery of an identical
 event not double-counting, a poison message not stalling the consumer group, and the
 settle-up loop clearing a debt it created.
+
+`BrokerOutageIT` is the one that tests the central claim rather than restating it. Every
+other test runs against a healthy broker, so none of them can tell this design apart from one
+that has simply not been unlucky yet. It pauses the Kafka container mid-flight, asserts that
+writes are still accepted and durable, that the read model does **not** move while events sit
+unpublished, and that everything converges unattended once the broker returns — with the
+group still netting to zero.
+
+The assertion that makes it worth having is the one that waits for the relay to *fail* a
+publish. Without it the test passes trivially whenever the outage is shorter than one
+poll-and-send cycle: nothing is attempted, nothing fails, and all it proves is that Kafka was
+briefly paused. That version of the test ran in 1.6s; this one takes about 20s, because it
+waits for the failure path to actually execute.
 
 `AuthorizationIT` is the regression net for the access boundary, and asserts the negative
 cases rather than only the happy path: every business endpoint refuses an anonymous caller,
