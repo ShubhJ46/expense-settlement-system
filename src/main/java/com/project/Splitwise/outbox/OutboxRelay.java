@@ -1,5 +1,6 @@
 package com.project.Splitwise.outbox;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.model.OutboxEvent;
@@ -110,10 +111,49 @@ public class OutboxRelay {
                 if (Thread.currentThread().isInterrupted()) {
                     break;
                 }
+
+                // Stop the batch when the broker is the problem.
+                //
+                // If it was unreachable for this record it is unreachable for the rest, and
+                // every one of them would burn the full send timeout finding that out. A
+                // hundred-row batch against a down broker meant roughly seventeen minutes in
+                // a single transaction, holding a hundred row locks and a pooled connection
+                // the whole time. Abandoning the batch costs nothing: the rows are untouched,
+                // and the next poll picks them up again.
+                if (!isPerRecordFailure(e)) {
+                    log.warn("Abandoning outbox batch after an infrastructure failure; "
+                            + "{} events left for the next poll", remaining(batch, event));
+                    break;
+                }
+                // Otherwise this row alone is bad — a payload that will not deserialise, or a
+                // type that no longer exists. Skipping past it lets the healthy events behind
+                // it through instead of queueing them behind something that can never succeed.
             }
         }
 
         repository.saveAll(batch);
+    }
+
+    /**
+     * Whether a failure belongs to this row rather than to the broker.
+     *
+     * <p>The distinction decides whether one bad event stalls the queue behind it or the
+     * relay gives up on a batch it cannot publish. A payload that will not deserialise, or a
+     * type that no longer exists, is this row's problem and will fail identically forever —
+     * so the batch continues past it. Anything else is assumed to be infrastructure.
+     *
+     * <p>Defaulting the unknown case to "infrastructure" is deliberate. Guessing wrong that
+     * way costs one wasted poll; guessing the other way burns the whole batch's send timeouts
+     * against a broker that is not there.
+     */
+    private static boolean isPerRecordFailure(Exception e) {
+        return e instanceof JsonProcessingException
+                || e instanceof ClassNotFoundException
+                || e instanceof IllegalArgumentException;
+    }
+
+    private static int remaining(List<OutboxEvent> batch, OutboxEvent current) {
+        return batch.size() - batch.indexOf(current) - 1;
     }
 
     /**
