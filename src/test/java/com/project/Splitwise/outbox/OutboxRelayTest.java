@@ -6,6 +6,8 @@ import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.model.OutboxEvent;
 import com.project.Splitwise.repository.OutboxEventRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -48,7 +50,10 @@ class OutboxRelayTest {
     @BeforeEach
     void setUp() {
         relay = new OutboxRelay(repository, kafkaTemplate, objectMapper,
-                new SimpleMeterRegistry(), new SplitwiseMetrics(new SimpleMeterRegistry()));
+                new SimpleMeterRegistry(), new SplitwiseMetrics(new SimpleMeterRegistry()),
+                // Real component over no-op tracing: the relay publishes inside a span scope,
+                // so a mock would silently swallow the work instead of running it.
+                new OutboxTracing(Tracer.NOOP, Propagator.NOOP));
         ReflectionTestUtils.setField(relay, "batchSize", 100);
     }
 

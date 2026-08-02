@@ -6,6 +6,7 @@ import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.model.OutboxEvent;
 import com.project.Splitwise.repository.OutboxEventRepository;
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.tracing.Span;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +45,7 @@ public class OutboxRelay {
     private final Counter published;
     private final Counter failed;
     private final SplitwiseMetrics metrics;
+    private final OutboxTracing tracing;
 
     @Value("${splitwise.outbox.batch-size:100}")
     private int batchSize;
@@ -52,11 +54,13 @@ public class OutboxRelay {
                        KafkaTemplate<String, Object> kafkaTemplate,
                        ObjectMapper objectMapper,
                        MeterRegistry meterRegistry,
-                       SplitwiseMetrics metrics) {
+                       SplitwiseMetrics metrics,
+                       OutboxTracing tracing) {
         this.repository = repository;
         this.kafkaTemplate = kafkaTemplate;
         this.objectMapper = objectMapper;
         this.metrics = metrics;
+        this.tracing = tracing;
         this.published = Counter.builder("splitwise.outbox.published")
                 .description("Outbox events successfully handed to the broker")
                 .register(meterRegistry);
@@ -91,17 +95,28 @@ public class OutboxRelay {
                 Object payload = objectMapper.readValue(
                         event.getPayload(), resolveEventType(event.getEventType()));
 
-                // Block on the ack. The row lock is held for the duration, which bounds
-                // how far ahead of the broker the relay can get and keeps ordering per key.
-                kafkaTemplate.send(event.getTopic(), event.getMessageKey(), payload)
-                        .get(SEND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                // Re-parent onto the request that staged this row, so the publish is part of
+                // that trace rather than a new one starting mid-air on a scheduler thread.
+                Span publishSpan = tracing.startPublishSpan(event.getTraceParent(), event.getTopic());
+                try {
+                    // Inside the scope, because Spring's Kafka instrumentation reads the
+                    // current context to parent its own send span.
+                    tracing.inScope(publishSpan, () -> sendAndWait(event, payload));
+                } finally {
+                    publishSpan.end();
+                }
 
                 event.markPublished();
                 published.increment();
                 // How long this row waited between being staged and reaching the broker.
                 // Isolates relay latency from consumer latency when convergence lag spikes.
                 metrics.recordOutboxPublishLag(event.getCreatedAt());
-            } catch (Exception e) {
+            } catch (Exception thrown) {
+                // Unwrap the scope plumbing so classification below sees the real failure
+                // rather than the wrapper introduced by publishing inside a span scope.
+                Exception e = (thrown instanceof PublishFailedException
+                        && thrown.getCause() instanceof Exception cause) ? cause : thrown;
+
                 // Leave published_at null so the next poll retries. Nothing is dropped.
                 event.recordFailure(e.getMessage());
                 failed.increment();
@@ -132,6 +147,33 @@ public class OutboxRelay {
         }
 
         repository.saveAll(batch);
+    }
+
+    /**
+     * Publishes one row and blocks on the acknowledgement.
+     *
+     * <p>Blocking holds the row lock for the duration, which bounds how far ahead of the
+     * broker the relay can run and keeps per-key ordering intact. Checked exceptions are
+     * wrapped because this runs inside a {@link Runnable} scope, and unwrapped by the caller
+     * so the existing per-record versus infrastructure classification still sees the original.
+     */
+    private void sendAndWait(OutboxEvent event, Object payload) {
+        try {
+            kafkaTemplate.send(event.getTopic(), event.getMessageKey(), payload)
+                    .get(SEND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PublishFailedException(e);
+        } catch (Exception e) {
+            throw new PublishFailedException(e);
+        }
+    }
+
+    /** Unwraps to the cause so failure classification is unaffected by the scope plumbing. */
+    private static class PublishFailedException extends RuntimeException {
+        PublishFailedException(Throwable cause) {
+            super(cause);
+        }
     }
 
     /**

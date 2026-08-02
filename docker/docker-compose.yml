@@ -87,5 +87,17 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
 
+  # Trace collector and UI. Jaeger's all-in-one image accepts OTLP directly, so no separate
+  # OpenTelemetry Collector is needed for a local setup.
+  jaeger:
+    image: jaegertracing/all-in-one:1.64.0
+    container_name: splitwise-jaeger
+    ports:
+      - "16686:16686"   # UI
+      - "4318:4318"     # OTLP/HTTP, which is what the application exports to
+      - "4317:4317"     # OTLP/gRPC, for anything that prefers it
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
 volumes:
   splitwise-pgdata:
