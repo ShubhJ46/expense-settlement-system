@@ -57,6 +57,21 @@ public class OutboxEvent {
     @Column(name = "last_error", columnDefinition = "text")
     private String lastError;
 
+    /**
+     * W3C {@code traceparent} of the request that staged this event.
+     *
+     * <p>The outbox is a deliberate break in the call chain — the HTTP thread returns long
+     * before the relay publishes — and that break severs a distributed trace as surely as it
+     * severs a stack trace. Carrying the trace context in the row lets the relay re-parent
+     * its span onto the request that caused it, so one write can be followed from the API
+     * call through Kafka and into the projection as a single trace.
+     *
+     * <p>Null when nothing was sampled, which is the normal case under a sampling rate below
+     * one and must stay harmless.
+     */
+    @Column(name = "trace_parent", length = 55)
+    private String traceParent;
+
     protected OutboxEvent() {
     }
 
@@ -66,6 +81,16 @@ public class OutboxEvent {
                        String topic,
                        String messageKey,
                        String payload) {
+        this(aggregateType, aggregateId, eventType, topic, messageKey, payload, null);
+    }
+
+    public OutboxEvent(String aggregateType,
+                       String aggregateId,
+                       String eventType,
+                       String topic,
+                       String messageKey,
+                       String payload,
+                       String traceParent) {
         this.id = UUID.randomUUID();
         this.aggregateType = aggregateType;
         this.aggregateId = aggregateId;
@@ -73,6 +98,7 @@ public class OutboxEvent {
         this.topic = topic;
         this.messageKey = messageKey;
         this.payload = payload;
+        this.traceParent = traceParent;
         this.createdAt = Instant.now();
         this.attempts = 0;
     }
@@ -118,5 +144,10 @@ public class OutboxEvent {
     /** When the row was staged. Read by the relay to report how long publication waited. */
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    /** May be null: nothing was sampled, or the row predates tracing. */
+    public String getTraceParent() {
+        return traceParent;
     }
 }

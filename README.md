@@ -223,6 +223,51 @@ Spring Boot binds the rest automatically and none of it is reimplemented here: H
 per endpoint, JVM memory and GC, HikariCP pool usage, and **Kafka consumer lag** — the last
 of which is why nothing in the listener path calls `consumer.endOffsets()`.
 
+### Tracing across the outbox
+
+```bash
+docker compose -f docker/docker-compose.yml up -d jaeger
+# Jaeger UI on http://localhost:16686
+```
+
+Metrics say *how long* convergence took. They cannot say **where** any individual slow write
+spent its time, which is the question you actually have when one of them is slow. Tracing
+answers that — but only if the trace survives the architecture, and this one has a hole in
+the middle of it.
+
+The outbox is a deliberate break in the call chain. The request thread commits a row and
+returns; a scheduled poll publishes it later on a different thread. That break severs a
+distributed trace exactly the way it severs a stack trace, so out of the box every relay
+publish begins its own unrelated trace and there is no path from the balance back to the API
+call that caused it.
+
+So the context travels in the row. `outbox_events.trace_parent` holds a W3C `traceparent`
+captured on the request thread; the relay reads it back and starts its publish span as a
+child of the original request. Kafka headers carry it from there, which Spring's own
+instrumentation handles once observation is enabled on the template and the listener
+container. The result is one trace spanning:
+
+```
+POST /expenses  →  outbox publish  →  Kafka send  →  BalanceEventConsumer
+                                                  →  balance-updated  →  projection
+```
+
+A missing context is ordinary rather than exceptional: under any sampling rate below 1.0
+most rows will not carry one, and rows written before this existed never will. Both still
+publish.
+
+### A silent misconfiguration worth knowing about
+
+Trace propagation defaulted to a **no-op**. Not disabled — no-op. Spans were created, sampled
+and exported perfectly; an inbound `traceparent` was ignored, nothing was written on the way
+out, and every trace was a disconnected single-span fragment. Nothing warns about this,
+because propagating zero fields is a legal configuration.
+
+`TracingConfig` declares the `ContextPropagators` bean explicitly instead of relying on the
+default. `TracingIT` sends its **own** `traceparent` on the request and asserts that exact
+trace id appears in the outbox row afterwards — which is why the misconfiguration was caught
+at all, and why a test that merely asserted "a span exists" would have passed throughout.
+
 ### Two things this got wrong first
 
 Both were silent, and both are now covered by `MetricsIT`:

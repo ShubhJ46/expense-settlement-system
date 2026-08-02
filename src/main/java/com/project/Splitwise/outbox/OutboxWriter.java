@@ -11,10 +11,14 @@ public class OutboxWriter {
 
     private final OutboxEventRepository repository;
     private final ObjectMapper objectMapper;
+    private final OutboxTracing tracing;
 
-    public OutboxWriter(OutboxEventRepository repository, ObjectMapper objectMapper) {
+    public OutboxWriter(OutboxEventRepository repository,
+                        ObjectMapper objectMapper,
+                        OutboxTracing tracing) {
         this.repository = repository;
         this.objectMapper = objectMapper;
+        this.tracing = tracing;
     }
 
     /**
@@ -42,6 +46,9 @@ public class OutboxWriter {
                 event.getClass().getName(),
                 topic,
                 messageKey,
-                payload));
+                payload,
+                // Captured on the request thread, so the relay can later attribute its publish
+                // to the API call that caused it rather than starting an unrelated trace.
+                tracing.currentTraceParent()));
     }
 }
