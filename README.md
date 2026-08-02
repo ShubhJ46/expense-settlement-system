@@ -207,6 +207,33 @@ Both were silent, and both are now covered by `MetricsIT`:
 The tests assert on the **scraped output**, not on the registry, precisely because those two
 failures are invisible from inside the process.
 
+### Observed in a local run
+
+510 events (420 expenses, 90 settlement payments) against real Postgres and Kafka on a single
+machine. Not a benchmark — the throughput was a trickle and everything shared one host. What
+it demonstrates is correctness under real concurrency rather than inside a test fixture.
+
+**The zero-sum invariant held exactly.** After 420 expenses — many of them amounts that do not
+divide evenly across five participants — and 90 payments, the group's balances summed to
+`0.00`. Not approximately, and not after rounding.
+
+**One optimistic-lock conflict occurred, and recovered correctly.** An expense and a payment
+reached the same balance row concurrently, the version check failed, the error handler retried
+the record, and the event was applied exactly once:
+
+```
+splitwise_events_processed_total{outcome="applied"}    510
+splitwise_events_processed_total{outcome="duplicate"}    0
+splitwise_balance_lock_conflicts_total                   1
+```
+
+The `duplicate = 0` is the part that matters. It confirms the rolled-back attempt took its
+`processed_events` row with it — had the dedup row survived the rollback, the retry would have
+been discarded as a duplicate and that expense would have vanished from the balances silently.
+
+That path has no unit test; forcing the race deterministically is awkward enough that the
+counter is the only evidence it works. It is instrumented for exactly that reason.
+
 ---
 
 ## Failure modes
