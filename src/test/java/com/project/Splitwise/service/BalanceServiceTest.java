@@ -3,6 +3,7 @@ package com.project.Splitwise.service;
 import com.project.Splitwise.domain.event.ExpenseCreatedEvent;
 import com.project.Splitwise.domain.event.GroupBalancesChangedEvent;
 import com.project.Splitwise.domain.event.PaymentRecordedEvent;
+import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.model.Balance;
 import com.project.Splitwise.model.ProcessedEvent;
 import com.project.Splitwise.repository.BalanceRepository;
@@ -18,7 +19,10 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.context.ApplicationEventPublisher;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -50,10 +54,16 @@ class BalanceServiceTest {
     /** Stands in for the balances table so deltas actually accumulate across calls. */
     private Map<Long, Balance> stored;
 
+    /** Real meters over an in-memory registry, so counter assertions test the actual wiring. */
+    private SplitwiseMetrics metrics;
+    private SimpleMeterRegistry meterRegistry;
+
     @BeforeEach
     void setUp() {
         stored = new HashMap<>();
-        balanceService = new BalanceService(balanceRepo, processedRepo, eventPublisher);
+        meterRegistry = new SimpleMeterRegistry();
+        metrics = new SplitwiseMetrics(meterRegistry);
+        balanceService = new BalanceService(balanceRepo, processedRepo, eventPublisher, metrics);
 
         when(balanceRepo.findByGroupIdAndUserId(anyLong(), anyLong()))
                 .thenAnswer(inv -> Optional.ofNullable(stored.get(inv.<Long>getArgument(1))));
@@ -64,10 +74,14 @@ class BalanceServiceTest {
         });
     }
 
+    /** Fixed so the propagation of occurredAt into the published signal is assertable. */
+    private static final Instant OCCURRED_AT = Instant.parse("2026-01-01T00:00:00Z");
+
     private static ExpenseCreatedEvent expense(String eventId, long paidBy, String amount,
                                                Map<Long, String> shares) {
         return ExpenseCreatedEvent.builder()
                 .eventId(eventId)
+                .occurredAt(OCCURRED_AT)
                 .expenseId(1L)
                 .groupId(GROUP_ID)
                 .paidBy(paidBy)
@@ -137,8 +151,31 @@ class BalanceServiceTest {
         ArgumentCaptor<Object> captor = ArgumentCaptor.forClass(Object.class);
         verify(eventPublisher, times(1)).publishEvent(captor.capture());
 
-        // Three participants used to mean three full-group snapshots on the wire.
-        assertEquals(List.of(new GroupBalancesChangedEvent(GROUP_ID)), captor.getAllValues());
+        // Three participants used to mean three full-group snapshots on the wire. The
+        // originating timestamp rides along so the projection can report end-to-end latency.
+        assertEquals(List.of(new GroupBalancesChangedEvent(GROUP_ID, OCCURRED_AT)),
+                captor.getAllValues());
+    }
+
+    @Test
+    @DisplayName("applied and duplicate events are counted separately")
+    void processingOutcomesAreCounted() {
+        ExpenseCreatedEvent event = expense("evt-counted", 1L, "300.00",
+                Map.of(1L, "100.00", 2L, "100.00", 3L, "100.00"));
+
+        when(processedRepo.existsById("evt-counted")).thenReturn(false);
+        balanceService.handleExpense(event);
+
+        when(processedRepo.existsById("evt-counted")).thenReturn(true);
+        balanceService.handleExpense(event);
+        balanceService.handleExpense(event);
+
+        assertEquals(1.0, meterRegistry.get("splitwise.events.processed")
+                .tag("outcome", "applied").counter().count());
+        // The ratio of these two is the redelivery rate, which is why they are one meter
+        // separated by a tag rather than two unrelated counters.
+        assertEquals(2.0, meterRegistry.get("splitwise.events.processed")
+                .tag("outcome", "duplicate").counter().count());
     }
 
     @Test

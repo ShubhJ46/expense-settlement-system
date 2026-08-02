@@ -20,6 +20,6 @@ public class BalanceKafkaPublisher {
      */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onGroupBalancesChanged(GroupBalancesChangedEvent event) {
-        producer.publish(event.groupId());
+        producer.publish(event.groupId(), event.occurredAt());
     }
 }

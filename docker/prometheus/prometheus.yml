@@ -1,0 +1,18 @@
+global:
+  # Tight for a local demo, so a dashboard reacts while you are still looking at it.
+  # A real deployment would use 15-30s.
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: splitwise
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # host.docker.internal reaches the application running on the host from inside the
+      # container. Port 9090 is the management port, not the API port — actuator is bound
+      # separately precisely so it can be scraped without a bearer token.
+      - targets: ['host.docker.internal:9090']
+        labels:
+          application: Splitwise
+    # Linux hosts without host-gateway support may need the app run in compose instead;
+    # on Docker Desktop this resolves out of the box.

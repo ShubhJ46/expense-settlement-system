@@ -41,7 +41,16 @@ public class SecurityConfig {
                     session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                     .requestMatchers("/auth/register", "/auth/login").permitAll()
-                    .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                    // Actuator is served only on management.server.port, never on the
+                    // application port, so permitting the path here exposes nothing: a
+                    // request to /actuator/** on the API port has no handler and 404s.
+                    //
+                    // It is still required. This filter chain is applied to the management
+                    // port as well, and EndpointRequest.toAnyEndpoint() deliberately does not
+                    // match once actuator has been moved to its own port — so a dedicated
+                    // actuator chain silently never matches, and without this rule every
+                    // Prometheus scrape gets a 401 from anyRequest().authenticated().
+                    .requestMatchers("/actuator/**").permitAll()
                     .anyRequest().authenticated()
             )
             // 401 with an empty body rather than a redirect to a login page that does not exist.

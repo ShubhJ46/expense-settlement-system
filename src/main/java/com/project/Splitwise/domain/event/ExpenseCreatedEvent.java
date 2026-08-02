@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.*;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 
 
@@ -35,6 +36,15 @@ public class  ExpenseCreatedEvent {
      * applying the expense twice.
      */
     private String eventId;
+
+    /**
+     * When the event was staged, used to measure how long it takes to reach the read model.
+     *
+     * <p>Purely observational — nothing behaves differently because of it. Consumers written
+     * against an older schema ignore it, and a replayed event that predates the field simply
+     * contributes no timing sample.
+     */
+    private Instant occurredAt;
 
     private  Long expenseId;
     private  Long groupId;

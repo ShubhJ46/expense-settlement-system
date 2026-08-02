@@ -1,5 +1,6 @@
 package com.project.Splitwise.kafka.dlq;
 
+import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.model.PoisonMessage;
 import com.project.Splitwise.readmodel.repository.PoisonMessageRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -26,9 +27,11 @@ import org.springframework.stereotype.Component;
 public class PoisonEventConsumer {
 
     private final PoisonMessageRepository poisonRepo;
+    private final SplitwiseMetrics metrics;
 
-    public PoisonEventConsumer(PoisonMessageRepository poisonRepo) {
+    public PoisonEventConsumer(PoisonMessageRepository poisonRepo, SplitwiseMetrics metrics) {
         this.poisonRepo = poisonRepo;
+        this.metrics = metrics;
     }
 
     @KafkaListener(
@@ -57,5 +60,9 @@ public class PoisonEventConsumer {
         );
 
         poisonRepo.save(poison);
+
+        // Alertable. A log line is only found by someone already looking; a counter going
+        // non-zero is what actually pages.
+        metrics.poisoned(originalTopic != null ? originalTopic : record.topic());
     }
 }

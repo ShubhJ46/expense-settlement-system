@@ -1,6 +1,7 @@
 package com.project.Splitwise.outbox;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.model.OutboxEvent;
 import com.project.Splitwise.repository.OutboxEventRepository;
 import io.micrometer.core.instrument.Counter;
@@ -13,6 +14,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -39,6 +42,7 @@ public class OutboxRelay {
     private final ObjectMapper objectMapper;
     private final Counter published;
     private final Counter failed;
+    private final SplitwiseMetrics metrics;
 
     @Value("${splitwise.outbox.batch-size:100}")
     private int batchSize;
@@ -46,10 +50,12 @@ public class OutboxRelay {
     public OutboxRelay(OutboxEventRepository repository,
                        KafkaTemplate<String, Object> kafkaTemplate,
                        ObjectMapper objectMapper,
-                       MeterRegistry meterRegistry) {
+                       MeterRegistry meterRegistry,
+                       SplitwiseMetrics metrics) {
         this.repository = repository;
         this.kafkaTemplate = kafkaTemplate;
         this.objectMapper = objectMapper;
+        this.metrics = metrics;
         this.published = Counter.builder("splitwise.outbox.published")
                 .description("Outbox events successfully handed to the broker")
                 .register(meterRegistry);
@@ -61,6 +67,14 @@ public class OutboxRelay {
         // relay is losing to the write rate or the broker is unreachable.
         meterRegistry.gauge("splitwise.outbox.pending", repository,
                 r -> (double) r.countByPublishedAtIsNull());
+
+        // Depth alone cannot tell a healthy burst from a stuck queue. Age can: a backlog
+        // that is large but young is the relay working through a spike, while one that is
+        // small but old is a row nothing can publish.
+        meterRegistry.gauge("splitwise.outbox.oldest.age.seconds", repository, r -> {
+            Instant oldest = r.findOldestUnpublishedAt();
+            return oldest == null ? 0d : (double) Duration.between(oldest, Instant.now()).toSeconds();
+        });
     }
 
     @Scheduled(fixedDelayString = "${splitwise.outbox.poll-interval-ms:500}")
@@ -83,6 +97,9 @@ public class OutboxRelay {
 
                 event.markPublished();
                 published.increment();
+                // How long this row waited between being staged and reaching the broker.
+                // Isolates relay latency from consumer latency when convergence lag spikes.
+                metrics.recordOutboxPublishLag(event.getCreatedAt());
             } catch (Exception e) {
                 // Leave published_at null so the next poll retries. Nothing is dropped.
                 event.recordFailure(e.getMessage());

@@ -3,6 +3,7 @@ package com.project.Splitwise.service;
 import com.project.Splitwise.domain.event.ExpenseCreatedEvent;
 import com.project.Splitwise.dto.CreateExpenseRequest;
 import com.project.Splitwise.factory.ExpenseEventFactory;
+import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.model.Expense;
 import com.project.Splitwise.model.ExpenseShare;
 import com.project.Splitwise.outbox.OutboxWriter;
@@ -28,17 +29,20 @@ public class ExpenseService {
     private final ExpenseEventFactory eventFactory;
     private final OutboxWriter outboxWriter;
     private final GroupAccess groupAccess;
+    private final SplitwiseMetrics metrics;
 
     public ExpenseService(ExpenseRepository expenseRepo,
                           ExpenseShareRepository shareRepo,
                           ExpenseEventFactory eventFactory,
                           OutboxWriter outboxWriter,
-                          GroupAccess groupAccess) {
+                          GroupAccess groupAccess,
+                          SplitwiseMetrics metrics) {
         this.expenseRepo = expenseRepo;
         this.shareRepo = shareRepo;
         this.eventFactory = eventFactory;
         this.outboxWriter = outboxWriter;
         this.groupAccess = groupAccess;
+        this.metrics = metrics;
     }
 
     /**
@@ -83,6 +87,7 @@ public class ExpenseService {
                 String.valueOf(saved.getGroupId()),
                 event);
 
+        metrics.expenseCreated();
         return saved;
     }
 

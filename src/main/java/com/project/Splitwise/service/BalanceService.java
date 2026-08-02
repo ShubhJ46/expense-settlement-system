@@ -3,6 +3,7 @@ package com.project.Splitwise.service;
 import com.project.Splitwise.domain.event.ExpenseCreatedEvent;
 import com.project.Splitwise.domain.event.GroupBalancesChangedEvent;
 import com.project.Splitwise.domain.event.PaymentRecordedEvent;
+import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.model.Balance;
 import com.project.Splitwise.model.ProcessedEvent;
 import com.project.Splitwise.repository.BalanceRepository;
@@ -19,13 +20,16 @@ public class BalanceService {
     private final BalanceRepository balanceRepo;
     private final ProcessedEventRepository processedRepo;
     private final ApplicationEventPublisher eventPublisher;
+    private final SplitwiseMetrics metrics;
 
     public BalanceService(BalanceRepository balanceRepo,
                           ProcessedEventRepository processedRepo,
-                          ApplicationEventPublisher eventPublisher) {
+                          ApplicationEventPublisher eventPublisher,
+                          SplitwiseMetrics metrics) {
         this.balanceRepo = balanceRepo;
         this.processedRepo = processedRepo;
         this.eventPublisher = eventPublisher;
+        this.metrics = metrics;
     }
 
     /**
@@ -40,6 +44,7 @@ public class BalanceService {
     @Transactional
     public void handleExpense(ExpenseCreatedEvent event) {
         if (processedRepo.existsById(event.getEventId())) {
+            metrics.eventDeduplicated();
             return;
         }
 
@@ -55,10 +60,11 @@ public class BalanceService {
         }
 
         processedRepo.save(new ProcessedEvent(event.getEventId()));
+        metrics.eventApplied();
 
         // One signal per expense, not per participant. Published to Kafka only after this
         // transaction commits (see BalanceKafkaPublisher).
-        eventPublisher.publishEvent(new GroupBalancesChangedEvent(groupId));
+        eventPublisher.publishEvent(new GroupBalancesChangedEvent(groupId, event.getOccurredAt()));
     }
 
     /**
@@ -75,6 +81,7 @@ public class BalanceService {
     @Transactional
     public void handlePayment(PaymentRecordedEvent event) {
         if (processedRepo.existsById(event.getEventId())) {
+            metrics.eventDeduplicated();
             return;
         }
 
@@ -84,8 +91,9 @@ public class BalanceService {
         applyDelta(groupId, event.getToUserId(), event.getAmount().negate());
 
         processedRepo.save(new ProcessedEvent(event.getEventId()));
+        metrics.eventApplied();
 
-        eventPublisher.publishEvent(new GroupBalancesChangedEvent(groupId));
+        eventPublisher.publishEvent(new GroupBalancesChangedEvent(groupId, event.getOccurredAt()));
     }
 
     private void applyDelta(Long groupId, Long userId, BigDecimal delta) {

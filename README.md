@@ -157,6 +157,58 @@ Two smaller decisions worth naming:
 
 ---
 
+## Observability
+
+```bash
+docker compose -f docker/docker-compose.yml up -d prometheus grafana
+# Grafana on http://localhost:3000 — dashboard "Splitwise — event pipeline"
+```
+
+Actuator binds to its own port (`9090`, `MANAGEMENT_PORT`) rather than sharing the API port.
+That is not tidiness: every application endpoint requires a bearer token and a Prometheus
+scraper has no way to obtain one, so metrics on the API port would either be unscrapeable or
+need a hole in the security filter chain. A separate port keeps the API fully authenticated
+and exposes metrics only to whatever can reach the management port.
+
+### The metric that matters
+
+For an eventually-consistent system the question is always *how stale is the read model*, so
+that is the headline:
+
+| Metric | Type | What it answers |
+|---|---|---|
+| `splitwise.convergence.lag` | Timer | Time from a write being staged to the projection reflecting it — the eventual-consistency window, at p50/p95/p99 |
+| `splitwise.outbox.publish.lag` | Timer | How much of that lag is the relay, as opposed to consumers |
+| `splitwise.outbox.pending` | Gauge | Unpublished backlog depth |
+| `splitwise.outbox.oldest.age.seconds` | Gauge | Age of the oldest unpublished row — depth alone cannot tell a healthy burst from a stuck queue |
+| `splitwise.events.processed{outcome}` | Counter | `applied` vs `duplicate`; the ratio is the redelivery rate |
+| `splitwise.events.poisoned{topic}` | Counter | Events no retry could fix. A log line is found only by someone already looking; a counter pages |
+| `splitwise.balance.lock.conflicts` | Counter | Optimistic-lock failures where an expense and a payment hit one balance row at once |
+| `splitwise.expenses.accepted`, `splitwise.payments.recorded` | Counter | Business volume |
+
+Spring Boot binds the rest automatically and none of it is reimplemented here: HTTP latency
+per endpoint, JVM memory and GC, HikariCP pool usage, and **Kafka consumer lag** — the last
+of which is why nothing in the listener path calls `consumer.endOffsets()`.
+
+### Two things this got wrong first
+
+Both were silent, and both are now covered by `MetricsIT`:
+
+- **`/actuator/prometheus` returned 404 while every other actuator endpoint worked.** Declaring
+  `micrometer-registry-prometheus` and exposing the endpoint is not sufficient; without
+  `management.prometheus.metrics.export.enabled=true` the context falls back to a
+  `SimpleMeterRegistry`. Metrics are collected normally, so nothing looks wrong from inside
+  the application — only the scrape is missing.
+- **A counter named `splitwise.expenses.created` was exported as `splitwise_expenses_total`.**
+  OpenMetrics reserves the `_created` suffix for series creation timestamps, so the name was
+  silently rewritten to something no dashboard would ever query. It is
+  `splitwise.expenses.accepted` now.
+
+The tests assert on the **scraped output**, not on the registry, precisely because those two
+failures are invisible from inside the process.
+
+---
+
 ## Failure modes
 
 | Failure | Behaviour |
@@ -209,8 +261,9 @@ GET  /groups/{groupId}/settlements  # settlement plan, computed live from the wr
 POST /groups/{groupId}/settlements  # record a payment that actually happened -> 202
 GET  /groups/{groupId}/payments     # payments already recorded, newest first
 
-GET  /actuator/health | /actuator/prometheus
 ```
+
+Actuator is on **port 9090**, not the API port — see Observability below.
 
 A full round trip:
 
@@ -272,7 +325,7 @@ and overpaying simply flips the payer's net position rather than clamping at zer
 ## Tests
 
 ```bash
-./mvnw test      # 66 unit tests, no Docker required
+./mvnw test      # 67 unit tests, no Docker required
 ./mvnw verify    # adds Testcontainers integration tests (needs a Docker daemon)
 ```
 

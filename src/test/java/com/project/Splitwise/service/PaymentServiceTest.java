@@ -3,6 +3,7 @@ package com.project.Splitwise.service;
 import com.project.Splitwise.domain.event.PaymentRecordedEvent;
 import com.project.Splitwise.dto.RecordPaymentRequest;
 import com.project.Splitwise.model.Payment;
+import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.outbox.OutboxWriter;
 import com.project.Splitwise.security.GroupAccess;
 import com.project.Splitwise.repository.PaymentRepository;
@@ -10,8 +11,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
@@ -34,6 +37,9 @@ class PaymentServiceTest {
     private OutboxWriter outboxWriter;
     @Mock
     private GroupAccess groupAccess;
+    /** Real meters rather than a mock; nothing here asserts on them, but they must not be null. */
+    @Spy
+    private SplitwiseMetrics metrics = new SplitwiseMetrics(new SimpleMeterRegistry());
     @InjectMocks
     private PaymentService paymentService;
 

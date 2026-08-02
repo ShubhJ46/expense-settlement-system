@@ -5,6 +5,7 @@ import com.project.Splitwise.dto.CreateExpenseRequest;
 import com.project.Splitwise.factory.ExpenseEventFactory;
 import com.project.Splitwise.model.Expense;
 import com.project.Splitwise.model.ExpenseShare;
+import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.outbox.OutboxWriter;
 import com.project.Splitwise.security.GroupAccess;
 import com.project.Splitwise.repository.ExpenseRepository;
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -49,7 +51,8 @@ class ExpenseServiceTest {
     @BeforeEach
     void setUp() {
         expenseService = new ExpenseService(
-                expenseRepo, shareRepo, new ExpenseEventFactory(), outboxWriter, groupAccess);
+                expenseRepo, shareRepo, new ExpenseEventFactory(), outboxWriter, groupAccess,
+                new SplitwiseMetrics(new SimpleMeterRegistry()));
 
         when(expenseRepo.save(any(Expense.class))).thenAnswer(inv -> {
             Expense e = inv.getArgument(0);
