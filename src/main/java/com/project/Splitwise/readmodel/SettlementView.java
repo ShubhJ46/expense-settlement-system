@@ -4,6 +4,19 @@ import jakarta.persistence.*;
 
 import java.math.BigDecimal;
 
+/**
+ * One leg of a group's stored settlement plan: {@code fromUser} should pay {@code toUser}
+ * this much to move the group toward zero.
+ *
+ * <p>A <em>suggestion</em>, not a record of anything that happened — payments that actually
+ * occurred are {@link com.project.Splitwise.model.Payment}. Nothing obliges anyone to follow
+ * these legs, and a payment need not correspond to one.
+ *
+ * <p>Rows are replaced wholesale per group rather than appended, because a plan is only
+ * meaningful as a complete set. Appending was the original behaviour and it accumulated
+ * every historical plan on top of the current one, so the endpoint returned a growing pile
+ * of contradictory advice.
+ */
 @Entity
 @Table(name = "settlement_view")
 public class SettlementView {

@@ -10,6 +10,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+/**
+ * The only endpoints reachable without a token — see
+ * {@link com.project.Splitwise.security.SecurityConfig}, where they are the entire allowlist.
+ *
+ * <p>Both return the same shape, so a client can treat registering and logging in
+ * identically: it gets a user and a bearer token either way.
+ */
 @RestController
 @RequestMapping("/auth")
 public class AuthController {

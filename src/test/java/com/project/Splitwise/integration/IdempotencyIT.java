@@ -1,7 +1,9 @@
 package com.project.Splitwise.integration;
 
 import com.project.Splitwise.domain.event.ExpenseCreatedEvent;
+import com.project.Splitwise.domain.event.PaymentRecordedEvent;
 import com.project.Splitwise.model.Balance;
+import com.project.Splitwise.readmodel.repository.PoisonMessageRepository;
 import com.project.Splitwise.repository.BalanceRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -17,6 +19,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Proves the effectively-once claim by doing what Kafka actually does on retry: delivering
@@ -33,6 +36,8 @@ class IdempotencyIT extends AbstractIntegrationTest {
     private KafkaTemplate<String, Object> kafkaTemplate;
     @Autowired
     private BalanceRepository balanceRepository;
+    @Autowired
+    private PoisonMessageRepository poisonMessages;
 
     private static ExpenseCreatedEvent event(String eventId, long groupId) {
         return ExpenseCreatedEvent.builder()
@@ -121,5 +126,32 @@ class IdempotencyIT extends AbstractIntegrationTest {
         kafkaTemplate.send("expense-created", key, event(UUID.randomUUID().toString(), groupId));
 
         await().atMost(Duration.ofSeconds(45)).untilAsserted(() -> assertNet(groupId, 1L, "200.00"));
+    }
+
+    @Test
+    @DisplayName("a poison payment is persisted too, not just a poison expense")
+    void poisonPaymentIsCaptured() {
+        long groupId = GROUP_IDS.incrementAndGet();
+        String eventId = UUID.randomUUID().toString();
+
+        // Self-transfer: structurally invalid, so the consumer rejects it as non-retryable.
+        PaymentRecordedEvent poison = PaymentRecordedEvent.builder()
+                .eventId(eventId)
+                .paymentId(999L)
+                .groupId(groupId)
+                .fromUserId(1L)
+                .toUserId(1L)
+                .amount(new BigDecimal("50.00"))
+                .build();
+
+        kafkaTemplate.send("payment-recorded", String.valueOf(groupId), poison);
+
+        // The DLT consumer previously listened only to expense-created.DLT, so a failed
+        // payment vanished when the broker's retention expired.
+        await().atMost(Duration.ofSeconds(45)).untilAsserted(() -> {
+            boolean captured = poisonMessages.findAll().stream()
+                    .anyMatch(p -> p.getPayload() != null && p.getPayload().contains(eventId));
+            assertTrue(captured, "the poison payment should have been persisted");
+        });
     }
 }

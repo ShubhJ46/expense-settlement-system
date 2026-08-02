@@ -14,6 +14,19 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
+/**
+ * Group membership — the data every authorization decision in the service is made against.
+ *
+ * <p>Shares the {@code /groups} base path with
+ * {@link com.project.Splitwise.controller.SettlementController}, which owns the
+ * {@code /groups/{id}/settlements} and {@code /groups/{id}/payments} sub-resources. Two
+ * controllers on one prefix is fine as long as no two handlers claim the same method and
+ * path, and it keeps settlement concerns out of this class.
+ *
+ * <p>Note what is missing: there is no "list all groups" endpoint. {@code GET /groups}
+ * returns the caller's own groups and nothing else, because a global listing would leak the
+ * existence and names of every group in the system.
+ */
 @RestController
 @RequestMapping("/groups")
 public class GroupController {

@@ -10,5 +10,13 @@ public interface SettlementViewRepository
 
     List<SettlementView> findByGroupId(Long groupId);
 
+    /**
+     * Clears a group's plan so a fresh one can replace it.
+     *
+     * <p>The delete and the re-insert run in one transaction in
+     * {@link com.project.Splitwise.readmodel.consumer.SettlementViewConsumer}, which is what
+     * makes reprojection idempotent: a replayed event rebuilds the same plan instead of
+     * stacking a second copy on top of the first.
+     */
     void deleteByGroupId(Long groupId);
 }
