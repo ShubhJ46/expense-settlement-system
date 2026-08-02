@@ -54,5 +54,38 @@ services:
       timeout: 10s
       retries: 10
 
+  # Observability. Optional for running the app — start them with:
+  #   docker compose -f docker/docker-compose.yml up -d prometheus grafana
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: splitwise-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # Short retention: this is a local demo, not a historical archive.
+      - --storage.tsdb.retention.time=6h
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: splitwise-grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      # Local only. The point is to open the dashboard without a login prompt getting in
+      # the way; nothing here is exposed beyond the host.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      # Provisioned from files so the dashboard is version-controlled rather than clicked
+      # together and lost when the container is removed.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
 volumes:
   splitwise-pgdata:

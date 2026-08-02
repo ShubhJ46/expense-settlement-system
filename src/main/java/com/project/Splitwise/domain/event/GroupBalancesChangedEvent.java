@@ -8,6 +8,10 @@ package com.project.Splitwise.domain.event;
  *
  * <p>Never leaves the JVM — {@link com.project.Splitwise.domain.event.BalanceUpdatedEvent}
  * is the published contract.
+ *
+ * @param occurredAt when the originating event was staged, forwarded so the projection can
+ *                   report end-to-end convergence latency instead of losing the start time
+ *                   at this hop.
  */
-public record GroupBalancesChangedEvent(Long groupId) {
+public record GroupBalancesChangedEvent(Long groupId, java.time.Instant occurredAt) {
 }

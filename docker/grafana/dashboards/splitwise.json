@@ -1,0 +1,176 @@
+{
+  "title": "Splitwise — event pipeline",
+  "uid": "splitwise-pipeline",
+  "tags": ["splitwise"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Eventual consistency",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Convergence lag — write to read model",
+      "description": "How stale the balance projection is. p99 is the number an SLO would be written against; the median alone hides exactly the cases worth investigating.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "fillOpacity": 8 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(splitwise_convergence_lag_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(splitwise_convergence_lag_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(splitwise_convergence_lag_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox publish lag",
+      "description": "The relay's share of the convergence lag. When the total spikes, this says whether the relay or the consumers are responsible.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 8 } }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(splitwise_outbox_publish_lag_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Outbox health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox backlog (rows)",
+      "description": "Unpublished rows. A rising line means the relay is losing to the write rate, or the broker is unreachable.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
+      "targets": [{ "expr": "splitwise_outbox_pending", "legendFormat": "pending" }]
+    },
+    {
+      "type": "stat",
+      "title": "Oldest unpublished row",
+      "description": "Depth cannot distinguish a healthy burst from a stuck queue; age can. Sustained non-zero here means something cannot be published at all.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 60 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [{ "expr": "splitwise_outbox_oldest_age_seconds" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Publish outcome (per second)",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 10 },
+      "targets": [
+        { "expr": "rate(splitwise_outbox_published_total[1m])", "legendFormat": "published" },
+        { "expr": "rate(splitwise_outbox_failed_total[1m])", "legendFormat": "failed" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Delivery correctness",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Event processing outcome",
+      "description": "The duplicate line is the redelivery rate. A trickle is normal under at-least-once delivery; a spike means consumers are dying between their DB commit and their offset commit.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(splitwise_events_processed_total[1m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Poison messages",
+      "description": "Anything above zero is an event no retry could fix. Persisted in poison_messages for replay.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [{ "expr": "sum(splitwise_events_poisoned_total)" }]
+    },
+    {
+      "type": "stat",
+      "title": "Balance lock conflicts",
+      "description": "Optimistic lock failures where an expense and a payment hit one balance row at once. Each was retried, so this is evidence the guard works rather than an error count.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
+      "targets": [{ "expr": "sum(splitwise_balance_lock_conflicts_total)" }]
+    },
+    {
+      "type": "row",
+      "title": "Traffic and consumers",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Business volume (per second)",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 28 },
+      "targets": [
+        { "expr": "rate(splitwise_expenses_accepted_total[1m])", "legendFormat": "expenses" },
+        { "expr": "rate(splitwise_payments_recorded_total[1m])", "legendFormat": "payments" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Kafka consumer lag (records)",
+      "description": "Auto-bound from the Kafka client; nothing in the listener path is polled to produce this.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 28 },
+      "targets": [
+        {
+          "expr": "max by (client_id) (kafka_consumer_fetch_manager_records_lag_max)",
+          "legendFormat": "{{client_id}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP p95 by endpoint",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 28 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket[1m])) by (le, uri))",
+          "legendFormat": "{{uri}}"
+        }
+      ]
+    }
+  ]
+}

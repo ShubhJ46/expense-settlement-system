@@ -1,6 +1,7 @@
 package com.project.Splitwise.readmodel.consumer;
 
 import com.project.Splitwise.domain.event.BalanceUpdatedEvent;
+import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.readmodel.GroupBalanceView;
 import com.project.Splitwise.readmodel.repository.GroupBalanceViewRepository;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -22,9 +23,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class BalanceViewConsumer {
 
     private final GroupBalanceViewRepository repository;
+    private final SplitwiseMetrics metrics;
 
-    public BalanceViewConsumer(GroupBalanceViewRepository repository) {
+    public BalanceViewConsumer(GroupBalanceViewRepository repository, SplitwiseMetrics metrics) {
         this.repository = repository;
+        this.metrics = metrics;
     }
 
     /**
@@ -47,5 +50,10 @@ public class BalanceViewConsumer {
             // overwrites the previous figure rather than accumulating alongside it.
             repository.save(new GroupBalanceView(groupId, ub.getUserId(), ub.getNetBalance()));
         }
+
+        // This is the end of the write-to-read path, so it is the only place the full
+        // eventual-consistency window can be observed. Recorded after the writes rather than
+        // before, so the number includes the projection's own work.
+        metrics.recordConvergence(event.getOccurredAt());
     }
 }

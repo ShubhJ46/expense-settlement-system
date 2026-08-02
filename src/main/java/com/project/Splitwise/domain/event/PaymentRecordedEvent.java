@@ -7,6 +7,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 
 /**
  * Emitted when a settlement payment is recorded. Carries its own {@code eventId} so the
@@ -20,6 +21,10 @@ import java.math.BigDecimal;
 public class PaymentRecordedEvent {
 
     private String eventId;
+
+    /** When the event was staged; see {@link ExpenseCreatedEvent#getOccurredAt()}. */
+    private Instant occurredAt;
+
     private Long paymentId;
     private Long groupId;
     private Long fromUserId;

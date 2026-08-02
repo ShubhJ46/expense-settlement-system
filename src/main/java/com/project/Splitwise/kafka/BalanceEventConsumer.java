@@ -1,7 +1,9 @@
 package com.project.Splitwise.kafka;
 
 import com.project.Splitwise.domain.event.ExpenseCreatedEvent;
+import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.service.BalanceService;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -15,9 +17,11 @@ public class BalanceEventConsumer {
     private static final Logger log = LoggerFactory.getLogger(BalanceEventConsumer.class);
 
     private final BalanceService balanceService;
+    private final SplitwiseMetrics metrics;
 
-    public BalanceEventConsumer(BalanceService balanceService) {
+    public BalanceEventConsumer(BalanceService balanceService, SplitwiseMetrics metrics) {
         this.balanceService = balanceService;
+        this.metrics = metrics;
     }
 
     /**
@@ -33,7 +37,17 @@ public class BalanceEventConsumer {
     @KafkaListener(topics = "expense-created", groupId = "balance-service")
     public void consume(ExpenseCreatedEvent event) {
         validate(event);
-        balanceService.handleExpense(event);
+        try {
+            balanceService.handleExpense(event);
+        } catch (OptimisticLockingFailureException e) {
+            // A payment consumer touched the same balance row concurrently. The optimistic
+            // lock fails at commit, which is after handleExpense returns, so this is the
+            // first place it can be observed. Counted and rethrown: the error handler retries
+            // the record, and the rolled-back attempt took its processed_events row with it,
+            // so the retry is not mistaken for a duplicate.
+            metrics.balanceLockConflict();
+            throw e;
+        }
         log.debug("Applied expense {} to group {}", event.getExpenseId(), event.getGroupId());
     }
 

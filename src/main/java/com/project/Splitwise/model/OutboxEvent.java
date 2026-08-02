@@ -114,4 +114,9 @@ public class OutboxEvent {
     public Instant getPublishedAt() {
         return publishedAt;
     }
+
+    /** When the row was staged. Read by the relay to report how long publication waited. */
+    public Instant getCreatedAt() {
+        return createdAt;
+    }
 }

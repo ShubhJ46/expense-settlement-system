@@ -5,6 +5,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -30,6 +31,12 @@ import java.util.List;
 public class BalanceUpdatedEvent {
 
     private Long groupId;
+
+    /**
+     * Carried through from the event that caused this change, so the projection can measure
+     * the full write-to-read latency rather than only its own last hop.
+     */
+    private Instant occurredAt;
 
     /** Every member's net position at the moment the snapshot was taken, not just the changed ones. */
     private List<UserBalance> balances;

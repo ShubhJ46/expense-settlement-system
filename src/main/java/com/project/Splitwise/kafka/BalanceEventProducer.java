@@ -6,6 +6,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.List;
 
 @Component
@@ -21,7 +22,7 @@ public class BalanceEventProducer {
     }
 
     @Transactional(readOnly = true)
-    public void publish(Long groupId) {
+    public void publish(Long groupId, Instant occurredAt) {
         List<BalanceUpdatedEvent.UserBalance> balances =
                 balanceRepo.findByGroupId(groupId).stream()
                         .map(b -> new BalanceUpdatedEvent.UserBalance(
@@ -29,7 +30,9 @@ public class BalanceEventProducer {
                                 b.getNetBalance()))
                         .toList();
 
-        BalanceUpdatedEvent event = new BalanceUpdatedEvent(groupId, balances);
+        // occurredAt is forwarded, not regenerated: the projection needs the time the write
+        // happened, not the time this snapshot was assembled.
+        BalanceUpdatedEvent event = new BalanceUpdatedEvent(groupId, occurredAt, balances);
 
         // Keyed by groupId. This event carries a full-group snapshot, so two unkeyed
         // sends could land on different partitions and be applied out of order by the

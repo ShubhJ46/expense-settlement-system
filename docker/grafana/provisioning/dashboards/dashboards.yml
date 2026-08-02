@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: Splitwise
+    orgId: 1
+    type: file
+    disableDeletion: true
+    # Read from the mounted directory, so the dashboard JSON in this repository is the
+    # source of truth rather than something edited in the UI and lost on restart.
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

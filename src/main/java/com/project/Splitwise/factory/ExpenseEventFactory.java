@@ -5,6 +5,7 @@ import com.project.Splitwise.dto.CreateExpenseRequest;
 import com.project.Splitwise.model.Expense;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -22,6 +23,9 @@ public class ExpenseEventFactory {
 
         return ExpenseCreatedEvent.builder()
                 .eventId(UUID.randomUUID().toString())
+                // Stamped here, alongside the id, so both are fixed at staging time and a
+                // relay retry reports the original latency rather than restarting the clock.
+                .occurredAt(Instant.now())
                 .expenseId(expense.getId())
                 .groupId(expense.getGroupId())
                 .paidBy(expense.getPaidBy())

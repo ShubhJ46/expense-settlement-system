@@ -1,7 +1,9 @@
 package com.project.Splitwise.kafka;
 
 import com.project.Splitwise.domain.event.PaymentRecordedEvent;
+import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.service.BalanceService;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -13,9 +15,11 @@ public class PaymentEventConsumer {
     private static final Logger log = LoggerFactory.getLogger(PaymentEventConsumer.class);
 
     private final BalanceService balanceService;
+    private final SplitwiseMetrics metrics;
 
-    public PaymentEventConsumer(BalanceService balanceService) {
+    public PaymentEventConsumer(BalanceService balanceService, SplitwiseMetrics metrics) {
         this.balanceService = balanceService;
+        this.metrics = metrics;
     }
 
     /**
@@ -31,7 +35,14 @@ public class PaymentEventConsumer {
     @KafkaListener(topics = "payment-recorded", groupId = "balance-service")
     public void consume(PaymentRecordedEvent event) {
         validate(event);
-        balanceService.handlePayment(event);
+        try {
+            balanceService.handlePayment(event);
+        } catch (OptimisticLockingFailureException e) {
+            // The other half of the race described above: an expense consumer got to the
+            // same balance row first. Same handling, counted under the same meter.
+            metrics.balanceLockConflict();
+            throw e;
+        }
         log.debug("Applied payment {} to group {}", event.getPaymentId(), event.getGroupId());
     }
 

@@ -2,6 +2,7 @@ package com.project.Splitwise.service;
 
 import com.project.Splitwise.domain.event.PaymentRecordedEvent;
 import com.project.Splitwise.dto.RecordPaymentRequest;
+import com.project.Splitwise.metrics.SplitwiseMetrics;
 import com.project.Splitwise.model.Payment;
 import com.project.Splitwise.outbox.OutboxWriter;
 import com.project.Splitwise.repository.PaymentRepository;
@@ -10,6 +11,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -21,13 +23,16 @@ public class PaymentService {
     private final PaymentRepository paymentRepo;
     private final OutboxWriter outboxWriter;
     private final GroupAccess groupAccess;
+    private final SplitwiseMetrics metrics;
 
     public PaymentService(PaymentRepository paymentRepo,
                           OutboxWriter outboxWriter,
-                          GroupAccess groupAccess) {
+                          GroupAccess groupAccess,
+                          SplitwiseMetrics metrics) {
         this.paymentRepo = paymentRepo;
         this.outboxWriter = outboxWriter;
         this.groupAccess = groupAccess;
+        this.metrics = metrics;
     }
 
     /**
@@ -59,6 +64,9 @@ public class PaymentService {
                 // Generated here, inside the transaction, so a relay retry republishes the
                 // same id and the consumer deduplicates it instead of paying twice.
                 .eventId(UUID.randomUUID().toString())
+                // Fixed at staging time alongside the id, so a relay retry reports the
+                // original latency rather than restarting the clock.
+                .occurredAt(Instant.now())
                 .paymentId(saved.getId())
                 .groupId(groupId)
                 .fromUserId(saved.getFromUserId())
@@ -75,6 +83,7 @@ public class PaymentService {
                 String.valueOf(groupId),
                 event);
 
+        metrics.paymentRecorded();
         return saved;
     }
 

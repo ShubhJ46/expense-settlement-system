@@ -5,6 +5,8 @@ import com.project.Splitwise.dto.GroupDtos;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.test.web.server.LocalManagementPort;
+import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -60,10 +62,33 @@ public abstract class AbstractIntegrationTest {
         // accidentally inherit this one.
         registry.add("splitwise.jwt.secret",
                 () -> "integration-test-signing-key-not-used-anywhere-else");
+
+        // Let the management context take an ephemeral port too. Pinning it to the
+        // configured 9090 would make the suite fail on any machine already using it, and
+        // would collide with itself if two test JVMs ran at once.
+        registry.add("management.server.port", () -> "0");
     }
 
     @Autowired
     protected TestRestTemplate restTemplate;
+
+    /** Actuator's port, assigned separately from the application's under RANDOM_PORT. */
+    @LocalManagementPort
+    private int managementPort;
+
+
+
+    /**
+     * A client pointed at the management context.
+     *
+     * <p>Actuator listens on its own port precisely so metrics can be scraped without a
+     * bearer token, so tests reach it the same way Prometheus would rather than through the
+     * authenticated application chain.
+     */
+    protected TestRestTemplate managementRestTemplate() {
+        return new TestRestTemplate(new RestTemplateBuilder()
+                .rootUri("http://localhost:" + managementPort));
+    }
 
     /** Unique per registration so parallel classes cannot collide on the email index. */
     private static final AtomicLong USER_SEQ = new AtomicLong();
