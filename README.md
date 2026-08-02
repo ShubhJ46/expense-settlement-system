@@ -67,6 +67,15 @@ LIMIT :batchSize
 FOR UPDATE SKIP LOCKED
 ```
 
+The relay blocks on each broker ack, so a batch it cannot publish is abandoned after the
+first infrastructure failure rather than working through the rest. If the broker was
+unreachable for one row it is unreachable for the next hundred, and each would spend the full
+send timeout discovering that — a hundred-row batch against a down broker previously meant
+roughly seventeen minutes inside one transaction, holding a hundred row locks and a pooled
+connection throughout. A row that fails *on its own merits* — a payload that will not
+deserialise — is skipped instead, so one poisoned row cannot stall the healthy events queued
+behind it.
+
 `SKIP LOCKED` is what makes the relay horizontally scalable — concurrent instances claim
 disjoint batches instead of blocking on each other's locks.
 
@@ -266,6 +275,8 @@ counter is the only evidence it works. It is instrumented for exactly that reaso
 |---|---|
 | Broker unreachable when an expense is created | Expense still commits; event stays in the outbox and publishes when the broker returns — covered by `BrokerOutageIT`, which pauses the broker mid-flight |
 | Relay dies mid-publish | Row stays unpublished, next poll resends; consumer dedupe absorbs the duplicate |
+| Broker down with a full batch staged | Relay abandons the batch after the first failure rather than timing out on every row; the rows are untouched and the next poll retries |
+| A single row that cannot be deserialised | Skipped so the healthy events behind it still publish, rather than blocking the queue on something that can never succeed |
 | Consumer crashes after DB commit, before offset commit | Record is redelivered; `processed_events` makes it a no-op |
 | Malformed event (shares do not sum to amount, missing id) | Non-retryable, routed straight to `expense-created.DLT` and persisted in `poison_messages` — the consumer group keeps moving |
 | Transient consumer failure | 3 retries at 2s, then DLT |
@@ -376,7 +387,7 @@ and overpaying simply flips the payer's net position rather than clamping at zer
 ## Tests
 
 ```bash
-./mvnw test      # 75 unit tests, no Docker required
+./mvnw test      # 80 unit tests, no Docker required
 ./mvnw verify    # adds Testcontainers integration tests (needs a Docker daemon)
 ```
 
