@@ -13,26 +13,31 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
 public class PaymentService {
 
     static final String PAYMENT_TOPIC = "payment-recorded";
+    private static final String RESOURCE_TYPE = "Payment";
 
     private final PaymentRepository paymentRepo;
     private final OutboxWriter outboxWriter;
     private final GroupAccess groupAccess;
     private final SplitwiseMetrics metrics;
+    private final IdempotencyGuard idempotency;
 
     public PaymentService(PaymentRepository paymentRepo,
                           OutboxWriter outboxWriter,
                           GroupAccess groupAccess,
-                          SplitwiseMetrics metrics) {
+                          SplitwiseMetrics metrics,
+                          IdempotencyGuard idempotency) {
         this.paymentRepo = paymentRepo;
         this.outboxWriter = outboxWriter;
         this.groupAccess = groupAccess;
         this.metrics = metrics;
+        this.idempotency = idempotency;
     }
 
     /**
@@ -49,7 +54,26 @@ public class PaymentService {
      */
     @Transactional
     public Payment recordPayment(Long groupId, RecordPaymentRequest req) {
-        validate(groupId, req);
+        return recordPayment(groupId, req, null);
+    }
+
+    /**
+     * Records a payment, at most once per idempotency key.
+     *
+     * <p>More consequential here than on expenses: a retried payment that is applied twice
+     * discharges a debt that was only paid once, and the money is simply gone from the
+     * group's ledger.
+     */
+    @Transactional
+    public Payment recordPayment(Long groupId, RecordPaymentRequest req, String idempotencyKey) {
+        Long caller = validate(groupId, req);
+
+        Optional<Long> replayed = idempotency.findReplay(idempotencyKey, caller, RESOURCE_TYPE, req);
+        if (replayed.isPresent()) {
+            return paymentRepo.findById(replayed.get()).orElseThrow(() ->
+                    new IllegalStateException("Idempotency key points at a missing payment: "
+                            + replayed.get()));
+        }
 
         Payment payment = new Payment();
         payment.setGroupId(groupId);
@@ -83,11 +107,14 @@ public class PaymentService {
                 String.valueOf(groupId),
                 event);
 
+        idempotency.record(idempotencyKey, caller, RESOURCE_TYPE, saved.getId(), req);
+
         metrics.paymentRecorded();
         return saved;
     }
 
-    private void validate(Long groupId, RecordPaymentRequest req) {
+    /** Returns the authenticated caller, which the idempotency key is scoped to. */
+    private Long validate(Long groupId, RecordPaymentRequest req) {
         if (groupId == null) {
             throw new IllegalArgumentException("groupId is required");
         }
@@ -109,6 +136,7 @@ public class PaymentService {
             throw new AccessDeniedException(
                     "A payment can only be recorded by the payer or the payee");
         }
+        return caller;
     }
 
     @Transactional(readOnly = true)

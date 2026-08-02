@@ -18,11 +18,13 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 @Service
 public class ExpenseService {
 
     private static final String EXPENSE_TOPIC = "expense-created";
+    private static final String RESOURCE_TYPE = "Expense";
 
     private final ExpenseRepository expenseRepo;
     private final ExpenseShareRepository shareRepo;
@@ -30,19 +32,22 @@ public class ExpenseService {
     private final OutboxWriter outboxWriter;
     private final GroupAccess groupAccess;
     private final SplitwiseMetrics metrics;
+    private final IdempotencyGuard idempotency;
 
     public ExpenseService(ExpenseRepository expenseRepo,
                           ExpenseShareRepository shareRepo,
                           ExpenseEventFactory eventFactory,
                           OutboxWriter outboxWriter,
                           GroupAccess groupAccess,
-                          SplitwiseMetrics metrics) {
+                          SplitwiseMetrics metrics,
+                          IdempotencyGuard idempotency) {
         this.expenseRepo = expenseRepo;
         this.shareRepo = shareRepo;
         this.eventFactory = eventFactory;
         this.outboxWriter = outboxWriter;
         this.groupAccess = groupAccess;
         this.metrics = metrics;
+        this.idempotency = idempotency;
     }
 
     /**
@@ -55,10 +60,32 @@ public class ExpenseService {
      */
     @Transactional
     public Expense createExpense(CreateExpenseRequest req) {
+        return createExpense(req, null);
+    }
+
+    /**
+     * Creates an expense, at most once per idempotency key.
+     *
+     * <p>The outbox makes the database and the broker agree; it does nothing for the hop in
+     * front of it. A client whose request times out and retries would otherwise create two
+     * entirely valid expenses, each applied exactly once — correct by every internal measure
+     * and still wrong. The key closes that, and closes it the same way: the idempotency row
+     * commits in this transaction, so a retry finds both or neither.
+     */
+    @Transactional
+    public Expense createExpense(CreateExpenseRequest req, String idempotencyKey) {
         // Authorization before anything else: the caller must be in the group, and so must
         // everyone the expense touches. Without the second check a legitimate member could
         // charge a share to somebody who was never in the group.
-        groupAccess.requireMember(req.getGroupId());
+        Long caller = groupAccess.requireMember(req.getGroupId());
+
+        Optional<Long> replayed = idempotency.findReplay(idempotencyKey, caller, RESOURCE_TYPE, req);
+        if (replayed.isPresent()) {
+            // Returned without re-running any of the work below, and without a second event.
+            return expenseRepo.findById(replayed.get()).orElseThrow(() ->
+                    new IllegalStateException("Idempotency key points at a missing expense: "
+                            + replayed.get()));
+        }
 
         List<CreateExpenseRequest.Share> shares = resolveShares(req);
 
@@ -86,6 +113,8 @@ public class ExpenseService {
                 // balance mutations for that group are applied in publication order.
                 String.valueOf(saved.getGroupId()),
                 event);
+
+        idempotency.record(idempotencyKey, caller, RESOURCE_TYPE, saved.getId(), req);
 
         metrics.expenseCreated();
         return saved;

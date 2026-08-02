@@ -40,6 +40,8 @@ class PaymentServiceTest {
     /** Real meters rather than a mock; nothing here asserts on them, but they must not be null. */
     @Spy
     private SplitwiseMetrics metrics = new SplitwiseMetrics(new SimpleMeterRegistry());
+    @Mock
+    private IdempotencyGuard idempotency;
     @InjectMocks
     private PaymentService paymentService;
 

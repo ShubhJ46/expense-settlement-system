@@ -1,6 +1,7 @@
 package com.project.Splitwise.controller;
 
 import com.project.Splitwise.dto.CreateExpenseRequest;
+import org.springframework.web.bind.annotation.RequestHeader;
 import com.project.Splitwise.model.Expense;
 import com.project.Splitwise.service.ExpenseService;
 import jakarta.validation.Valid;
@@ -38,9 +39,19 @@ public class ExpenseController {
                 PageRequest.of(Math.max(page, 0), capped, Sort.by(Sort.Direction.DESC, "createdAt")));
     }
 
+    /**
+     * Creates an expense.
+     *
+     * <p>{@code Idempotency-Key} is optional and follows the convention every payments API
+     * uses: send the same key on a retry and the original expense comes back rather than a
+     * second one. Reusing a key with a different body is a client bug and is refused with a
+     * 409 rather than answered with the earlier response.
+     */
     @PostMapping
-    public ResponseEntity<?> create(@RequestBody @Valid CreateExpenseRequest req) {
+    public ResponseEntity<?> create(@RequestBody @Valid CreateExpenseRequest req,
+                                    @RequestHeader(value = "Idempotency-Key", required = false)
+                                    String idempotencyKey) {
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(service.createExpense(req));
+                .body(service.createExpense(req, idempotencyKey));
     }
 }

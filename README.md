@@ -89,6 +89,30 @@ land on one partition where offset order is total order. Without that key, an un
 full-group snapshot could be applied after a newer one and the read model would move
 backwards in time.
 
+### 2b. The hop the outbox does not cover
+
+The outbox makes Postgres and Kafka agree. `processed_events` makes redelivery harmless.
+Neither does anything about the client.
+
+A caller whose `POST /expenses` times out has no idea whether it succeeded, so it retries —
+and gets a second, entirely valid expense. Both are applied exactly once. Every internal
+guarantee holds perfectly, and the group is charged twice.
+
+```http
+POST /expenses
+Idempotency-Key: 9f2b...
+```
+
+The key is optional, scoped to the authenticated caller, and closed the same way as
+everything else here: the `idempotency_keys` row is written **in the same transaction** as
+the expense, so a retry finds both or neither. Replaying returns the original resource
+without emitting a second event. Reusing a key with a *different* body is a client bug rather
+than a retry — answering it with the first response would silently discard the second
+request — so it is refused with `409`.
+
+Keys are scoped per user, not globally, so one caller can neither collide with nor probe for
+another's keys.
+
 ### 3. Money that does not divide evenly
 
 Split 10.00 three ways. Round each part to 3.33 and a paisa vanishes; round each to 3.34 and
@@ -280,12 +304,12 @@ GET  /groups                        # the caller's own groups, and only those
 GET  /groups/{groupId}              # one group, if the caller is in it
 POST /groups/{groupId}/members      # add a user to the group
 
-POST /expenses                      # create an expense (EQUAL or EXACT split)
+POST /expenses                      # create an expense (EQUAL or EXACT split); Idempotency-Key optional
 GET  /expenses?groupId=&page=&size= # one group's expenses, paged
 GET  /balances/{groupId}            # net balances, served from the projection
 GET  /settlements/{groupId}         # settlement plan, served from the projection
 GET  /groups/{groupId}/settlements  # settlement plan, computed live from the write model
-POST /groups/{groupId}/settlements  # record a payment that actually happened -> 202
+POST /groups/{groupId}/settlements  # record a payment that happened -> 202; Idempotency-Key optional
 GET  /groups/{groupId}/payments     # payments already recorded, newest first
 
 ```
@@ -352,7 +376,7 @@ and overpaying simply flips the payer's net position rather than clamping at zer
 ## Tests
 
 ```bash
-./mvnw test      # 67 unit tests, no Docker required
+./mvnw test      # 75 unit tests, no Docker required
 ./mvnw verify    # adds Testcontainers integration tests (needs a Docker daemon)
 ```
 
