@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Unit tests, integration tests, schema validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      # The GitHub-hosted Ubuntu runner ships a working Docker daemon, which is what the
+      # Testcontainers-backed integration tests need for real Postgres and Kafka. Asserting
+      # it up front turns a missing daemon into a clear failure rather than a confusing
+      # container-startup timeout deep in the failsafe run.
+      - name: Verify Docker is available
+        run: docker info --format 'Docker {{.ServerVersion}} is up'
+
+      # `verify` runs surefire (unit tests) and then failsafe (the *IT classes), so this
+      # single command covers the whole suite. SchemaValidationIT will fail the build if the
+      # Flyway migrations and the entity model have drifted apart.
+      - name: Build and test
+        run: ./mvnw --batch-mode --no-transfer-progress verify
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+          if-no-files-found: ignore
+          retention-days: 7

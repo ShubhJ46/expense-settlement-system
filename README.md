@@ -1,6 +1,6 @@
 # Expense Settlement System
 
-[![Splitwise CI](https://github.com/ShubhJ46/Java-Projects/actions/workflows/splitwise.yml/badge.svg)](https://github.com/ShubhJ46/Java-Projects/actions/workflows/splitwise.yml)
+[![CI](https://github.com/ShubhJ46/expense-settlement-system/actions/workflows/ci.yml/badge.svg)](https://github.com/ShubhJ46/expense-settlement-system/actions/workflows/ci.yml)
 
 An event-driven backend for splitting shared expenses, in the style of Splitwise. Built with
 Java 21, Spring Boot 3.5, Kafka and PostgreSQL.
