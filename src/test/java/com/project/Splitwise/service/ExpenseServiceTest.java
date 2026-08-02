@@ -6,6 +6,7 @@ import com.project.Splitwise.factory.ExpenseEventFactory;
 import com.project.Splitwise.model.Expense;
 import com.project.Splitwise.model.ExpenseShare;
 import com.project.Splitwise.metrics.SplitwiseMetrics;
+import java.util.Optional;
 import com.project.Splitwise.outbox.OutboxWriter;
 import com.project.Splitwise.security.GroupAccess;
 import com.project.Splitwise.repository.ExpenseRepository;
@@ -46,13 +47,17 @@ class ExpenseServiceTest {
     @Mock
     private GroupAccess groupAccess;
 
+    /** Permissive by default; idempotency behaviour is covered in IdempotencyIT and its own test. */
+    @Mock
+    private IdempotencyGuard idempotency;
+
     private ExpenseService expenseService;
 
     @BeforeEach
     void setUp() {
         expenseService = new ExpenseService(
                 expenseRepo, shareRepo, new ExpenseEventFactory(), outboxWriter, groupAccess,
-                new SplitwiseMetrics(new SimpleMeterRegistry()));
+                new SplitwiseMetrics(new SimpleMeterRegistry()), idempotency);
 
         when(expenseRepo.save(any(Expense.class))).thenAnswer(inv -> {
             Expense e = inv.getArgument(0);

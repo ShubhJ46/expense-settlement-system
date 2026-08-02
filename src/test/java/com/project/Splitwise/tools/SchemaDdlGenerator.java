@@ -4,6 +4,7 @@ import com.project.Splitwise.model.Balance;
 import com.project.Splitwise.model.Expense;
 import com.project.Splitwise.model.ExpenseGroup;
 import com.project.Splitwise.model.ExpenseShare;
+import com.project.Splitwise.model.IdempotencyRecord;
 import com.project.Splitwise.model.GroupMember;
 import com.project.Splitwise.model.User;
 import com.project.Splitwise.model.OutboxEvent;
@@ -59,6 +60,7 @@ class SchemaDdlGenerator {
                     .addAnnotatedClass(ExpenseShare.class)
                     .addAnnotatedClass(Balance.class)
                     .addAnnotatedClass(Payment.class)
+                    .addAnnotatedClass(IdempotencyRecord.class)
                     .addAnnotatedClass(User.class)
                     .addAnnotatedClass(ExpenseGroup.class)
                     .addAnnotatedClass(GroupMember.class)
